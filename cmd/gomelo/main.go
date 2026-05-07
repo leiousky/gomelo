@@ -440,6 +440,7 @@ var mainGoTemplate = `package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 
@@ -477,12 +478,17 @@ func startMaster() {
 		os.Exit(1)
 	}
 
-	if _, ok := masterConfig[env]; !ok {
+	masterCfg, ok := masterConfig[env]
+	if !ok {
 		fmt.Printf("Env %s not found in master.json\n", env)
 		os.Exit(1)
 	}
 
-	fmt.Printf("Starting Master (env: %s)...\n", env)
+	host, _ := masterCfg["host"].(string)
+	port, _ := masterCfg["port"].(float64)
+	masterAddr := fmt.Sprintf("%s:%d", host, int(port))
+
+	fmt.Printf("Starting Master (env: %s, addr: %s)...\n", env, masterAddr)
 
 	masterServer := master.New()
 	masterServer.EnableAdmin(":3006")
@@ -498,7 +504,7 @@ func startMaster() {
 		os.Exit(1)
 	}
 
-	var serversConfig map[string]map[string]any
+	var serversConfig map[string][]map[string]any
 	if err := json.Unmarshal(serversData, &serversConfig); err != nil {
 		fmt.Printf("Parse servers.json failed: %v\n", err)
 		os.Exit(1)
@@ -511,25 +517,17 @@ func startMaster() {
 	}
 
 	var allServers []map[string]any
-	serverCfgs := make(map[string]map[string]any)
+	serverCfgs := make(map[string]any)
 
-	for serverType, cfg := range envServers {
-		if cfgMap, ok := cfg.(map[string]any); ok {
-			path, _ := cfgMap["path"].(string)
-			instances, _ := cfgMap["instances"].(float64)
-			servers, _ := cfgMap["servers"].([]any)
+	for _, srv := range envServers {
+		srv["masterHost"] = masterAddr
+		allServers = append(allServers, srv)
 
+		serverType, _ := srv["serverType"].(string)
+		if serverType != "" && serverCfgs[serverType] == nil {
 			serverCfgs[serverType] = map[string]any{
-				"path":      path,
-				"instances": int(instances),
-			}
-
-			for _, s := range servers {
-				if srv, ok := s.(map[string]any); ok {
-					srv["serverType"] = serverType
-					srv["masterHost"] = masterAddr
-					allServers = append(allServers, srv)
-				}
+				"path":      "",
+				"instances": 1,
 			}
 		}
 	}
@@ -591,38 +589,20 @@ func goModTemplate(name string) string {
 go 1.21
 
 require github.com/chuhongliang/gomelo v1.5.4
+
+replace github.com/chuhongliang/gomelo => D:/workspace/gomelo
 `, name)
 }
 
 var serversJsonTemplate = `{
-  "development": {
-    "connector": {
-      "instances": 1,
-      "servers": [
-        {"id": "connector-1", "host": "127.0.0.1", "port": 3010, "frontend": true}
-      ]
-    },
-    "gate": {
-      "instances": 1,
-      "servers": [
-        {"id": "gate-1", "host": "127.0.0.1", "port": 3011}
-      ]
-    }
-  },
-  "production": {
-    "connector": {
-      "instances": 1,
-      "servers": [
-        {"id": "connector-1", "host": "127.0.0.1", "port": 3010, "frontend": true}
-      ]
-    },
-    "gate": {
-      "instances": 1,
-      "servers": [
-        {"id": "gate-1", "host": "127.0.0.1", "port": 3011}
-      ]
-    }
-  }
+  "development": [
+    {"id": "connector-1", "serverType": "connector", "host": "127.0.0.1", "port": 3010, "frontend": true},
+    {"id": "gate-1", "serverType": "gate", "host": "127.0.0.1", "port": 3011}
+  ],
+  "production": [
+    {"id": "connector-1", "serverType": "connector", "host": "127.0.0.1", "port": 3010, "frontend": true},
+    {"id": "gate-1", "serverType": "gate", "host": "127.0.0.1", "port": 3011}
+  ]
 }
 `
 
@@ -711,7 +691,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	var serversConfig map[string]map[string]any
+	var serversConfig map[string][]map[string]any
 	if err := json.Unmarshal(serversData, &serversConfig); err != nil {
 		fmt.Printf("Parse servers.json failed: %v\n", err)
 		os.Exit(1)
@@ -724,25 +704,17 @@ func main() {
 	}
 
 	var allServers []map[string]any
-	serverCfgs := make(map[string]map[string]any)
+	serverCfgs := make(map[string]any)
 
-	for serverType, cfg := range envServers {
-		if cfgMap, ok := cfg.(map[string]any); ok {
-			path, _ := cfgMap["path"].(string)
-			instances, _ := cfgMap["instances"].(float64)
-			servers, _ := cfgMap["servers"].([]any)
+	for _, srv := range envServers {
+		srv["masterHost"] = masterAddr
+		allServers = append(allServers, srv)
 
+		serverType, _ := srv["serverType"].(string)
+		if serverType != "" && serverCfgs[serverType] == nil {
 			serverCfgs[serverType] = map[string]any{
-				"path":      path,
-				"instances": int(instances),
-			}
-
-			for _, s := range servers {
-				if srv, ok := s.(map[string]any); ok {
-					srv["serverType"] = serverType
-					srv["masterHost"] = masterAddr
-					allServers = append(allServers, srv)
-				}
+				"path":      "",
+				"instances": 1,
 			}
 		}
 	}

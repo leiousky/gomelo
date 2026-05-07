@@ -111,11 +111,12 @@ func (l *Loader) GetServerID() string {
 
 func (l *Loader) Load() error {
 	l.mu.Lock()
-	defer l.mu.Unlock()
-
 	if l.loaded {
+		l.mu.Unlock()
 		return nil
 	}
+	l.loaded = true
+	l.mu.Unlock()
 
 	serverTypes := l.discoverServerTypes()
 	for _, st := range serverTypes {
@@ -132,7 +133,6 @@ func (l *Loader) Load() error {
 			return fmt.Errorf("load crons for %s: %w", st, err)
 		}
 	}
-	l.loaded = true
 	return nil
 }
 

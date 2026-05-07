@@ -47,6 +47,8 @@ type MasterServer interface {
 	OnUnregister(callback func(string))
 	OnStateChange(callback func(id string, oldState, newState int))
 	EnableAdmin(addr string)
+	SetServerCfgs(cfgs map[string]any)
+	StartServers(servers []map[string]any) error
 }
 
 type masterServer struct {
@@ -666,6 +668,7 @@ func (m *masterServer) StartServers(servers []map[string]any) error {
 				fmt.Sprintf("GOMELO_MASTER_HOST=%s", m.addr),
 				fmt.Sprintf("GOMELO_HOST=%s", host),
 				fmt.Sprintf("GOMELO_PORT=%d", int(port)),
+				fmt.Sprintf("GOMELO_ENV=%s", os.Getenv("GOMELO_ENV")),
 			)
 
 			argsList, _ := cfg["args"].([]any)

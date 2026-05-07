@@ -176,7 +176,7 @@ func TestApp_Configure(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			called := false
-			app.Configure(tt.env, tt.serverType)(func(s *Server) {
+			app.ConfigureWithEnv(tt.env, tt.serverType)(func(s *Server) {
 				called = true
 				if s.app != app {
 					t.Error("server should have app reference")

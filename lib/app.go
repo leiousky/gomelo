@@ -239,6 +239,37 @@ func (a *App) Setup(configDir string) error {
 		a.SetMasterAddr(fmt.Sprintf("%s:%d", masterCfg.Host, masterCfg.Port))
 	}
 
+	serverID := os.Getenv("GOMELO_SERVER_ID")
+	if serverID == "" {
+		serverID = a.serverId
+	}
+	if serverID == "" {
+		return nil
+	}
+
+	serversPath := filepath.Join(configDir, "servers.json")
+	servers, err := LoadServersConfig(serversPath, env)
+	if err != nil {
+		return nil
+	}
+
+	for _, s := range servers {
+		if s["id"] == serverID {
+			if host, ok := s["host"].(string); ok {
+				a.SetHost(host)
+			}
+			if port, ok := s["port"].(float64); ok {
+				a.SetPort(int(port))
+			}
+			a.SetServerId(serverID)
+			if st, ok := s["serverType"].(string); ok {
+				a.SetServerType(st)
+			}
+			a.SetCurServer(s)
+			break
+		}
+	}
+
 	return nil
 }
 
@@ -272,7 +303,7 @@ func (a *App) AutoConfigure(fn func(*Server)) {
 	if st == "" {
 		return
 	}
-	a.Configure(st, st)(fn)
+	a.ConfigureWithEnv(st, st)(fn)
 }
 
 type Context struct {
@@ -626,8 +657,8 @@ func (a *App) SetStartTimeout(d time.Duration) { a.startTimeout = d }
 func (a *App) SetStopTimeout(d time.Duration)  { a.stopTimeout = d }
 
 type ServersConfig struct {
-	Development map[string][]map[string]any `json:"development"`
-	Production  map[string][]map[string]any `json:"production"`
+	Development []map[string]any `json:"development"`
+	Production  []map[string]any `json:"production"`
 }
 
 func LoadServersConfig(path string, env string) ([]map[string]any, error) {
@@ -644,18 +675,12 @@ func LoadServersConfig(path string, env string) ([]map[string]any, error) {
 	var servers []map[string]any
 	switch env {
 	case "development":
-		for st, list := range cfg.Development {
-			for _, s := range list {
-				s["serverType"] = st
-				servers = append(servers, s)
-			}
+		for _, s := range cfg.Development {
+			servers = append(servers, s)
 		}
 	case "production":
-		for st, list := range cfg.Production {
-			for _, s := range list {
-				s["serverType"] = st
-				servers = append(servers, s)
-			}
+		for _, s := range cfg.Production {
+			servers = append(servers, s)
 		}
 	default:
 		return nil, fmt.Errorf("unknown env: %s", env)
@@ -698,7 +723,11 @@ func (a *App) LoadServers(path string) error {
 	return nil
 }
 
-func (a *App) Configure(env string, serverType ...string) func(fn func(*Server)) {
+func (a *App) Configure(fn func(*Server)) {
+	fn(&Server{app: a, serverType: a.serverType, frontend: false, port: 0})
+}
+
+func (a *App) ConfigureWithEnv(env string, serverType ...string) func(fn func(*Server)) {
 	return func(fn func(*Server)) {
 		currentEnv, _ := a.Get("env").(string)
 		currentType := a.serverType
