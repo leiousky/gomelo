@@ -1,0 +1,10 @@
+{
+  "development": [
+    {"id": "connector-1", "serverType": "connector", "host": "127.0.0.1", "port": 3010, "frontend": true},
+    {"id": "gate-1", "serverType": "gate", "host": "127.0.0.1", "port": 3011}
+  ],
+  "production": [
+    {"id": "connector-1", "serverType": "connector", "host": "127.0.0.1", "port": 3010, "frontend": true},
+    {"id": "gate-1", "serverType": "gate", "host": "127.0.0.1", "port": 3011}
+  ]
+}

@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>gomelo Admin</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .server { border: 1px solid #ccc; padding: 10px; margin: 10px 0; }
+        .online { color: green; }
+        .offline { color: red; }
+    </style>
+</head>
+<body>
+    <h1>gomelo Game Server Monitor</h1>
+    <div id="servers">Loading...</div>
+    <script>
+        async function loadServers() {
+            try {
+                var res = await fetch('/api/servers');
+                var data = await res.json();
+                document.getElementById('servers').innerHTML = '';
+                for (var type in data) {
+                    var html = '<h3>' + type + '</h3>';
+                    for (var s of data[type]) {
+                        html += '<div class="server">';
+                        html += '<span class="' + (s.online ? 'online' : 'offline') + '">●</span> ';
+                        html += s.id + ' - ' + s.host + ':' + s.port;
+                        html += '</div>';
+                    }
+                    document.getElementById('servers').innerHTML += html;
+                }
+            } catch (e) {
+                document.getElementById('servers').innerText = 'Error loading servers';
+            }
+        }
+        loadServers();
+        setInterval(loadServers, 5000);
+    </script>
+</body>
+</html>
