@@ -1,423 +1,215 @@
 # Distributed Guide - 分布式部署指南
 
-gomelo 支持多节点分布式部署，适合大规模游戏服务器架构。
+gomelo 支持前端/后端分离。前端 connector 负责客户端连接，后端服务通过 RPC 暴露业务能力，Master 负责服务协调和管理查询。
 
-## 架构概述
+## 拓扑结构
 
 ```
-                        ┌─────────────┐
-                        │   Master    │  ← 服务协调中心
-                        │  (port 3040) │
-                        └─────────────┘
-                               │
-    ┌──────────────────────────┼──────────────────────────┐
-    │                          │                          │
-┌───▼────┐              ┌──────▼──────┐              ┌──────▼──────┐
-│connector│              │  connector  │              │  connector  │
-│port 3010│              │  port 3011  │              │  port 3012  │  ← 前端层
-└────┬────┘              └──────┬──────┘              └──────┬──────┘
-     │                           │                          │
-     └──────────────────────────┼──────────────────────────┘
-                                │ RPC
-                    ┌───────────┼───────────┐
-                    │           │           │
-              ┌─────▼─────┐┌───▼────┐┌─────▼─────┐
-              │    chat    ││  game  ││   auth    │  ← 后端层
-              │  port 3020 ││port3030││ port 3040 │
-              └───────────┘└────────┘└───────────┘
+clients
+  |
+  v
+connector tcp/ws/udp  --forward/RPC-->  chat/game/auth backends
+  |
+  +-- register/query --> master
 ```
 
-## 核心组件
+## 配置文件
 
-### Master Server
-
-Master 负责协调所有服务器：
-
-```go
-master := master.New(":3040")
-master.Start()
-```
-
-### Registry
-
-服务注册中心，用于服务发现：
-
-```go
-reg := registry.New()
-```
-
-### Selector
-
-负载均衡选择器：
-
-```go
-sel := selector.NewRandomSelector()
-// 或一致性哈希
-sel := selector.NewConsistentHashSelector(100, nil)
-```
-
-## 配置多服务器
-
-### servers.json
+`config/master.json`：
 
 ```json
 {
   "development": {
-    "connector": [
-      {"id": "connector-1", "host": "127.0.0.1", "port": 3010}
-    ],
-    "chat": [
-      {"id": "chat-1", "host": "127.0.0.1", "port": 3020}
-    ]
-  },
-  "production": {
-    "connector": [
-      {"id": "connector-1", "host": "10.0.0.1", "port": 3010},
-      {"id": "connector-2", "host": "10.0.0.2", "port": 3010}
-    ],
-    "chat": [
-      {"id": "chat-1", "host": "10.0.1.1", "port": 3020},
-      {"id": "chat-2", "host": "10.0.1.2", "port": 3020}
-    ],
-    "game": [
-      {"id": "game-1", "host": "10.0.2.1", "port": 3030}
-    ]
+    "id": "master-1",
+    "host": "127.0.0.1",
+    "port": 3005
   }
 }
 ```
 
-## 前端服务器 (Connector)
+`config/servers.json`：
 
-处理客户端连接：
-
-```go
-app := gomelo.NewApp(
-    gomelo.WithPort(3010),
-    gomelo.WithServerID("connector-1"),
-    gomelo.WithMasterAddr("127.0.0.1:3040"),
-)
-
-app.Configure("connector", "connector")(func(s *gomelo.Server) {
-    s.SetFrontend(true)
-    s.SetPort(3010)
-})
-
-// 注册到 Master
-app.On("connector.entry", handleEntry)
-
-// 转发消息到后端
-app.On("chat.send", handleForwardToChat)
+```json
+{
+  "development": [
+    {
+      "id": "connector-1",
+      "serverType": "connector",
+      "host": "127.0.0.1",
+      "port": 3010,
+      "frontend": true
+    },
+    {
+      "id": "chat-1",
+      "serverType": "chat",
+      "host": "127.0.0.1",
+      "port": 3020,
+      "frontend": false
+    }
+  ]
+}
 ```
 
-## 后端服务器 (Backend)
+`lib.LoadServersConfig` 要求每个环境下是服务器对象数组，不是按类型分组的 map。
 
-处理业务逻辑：
-
-```go
-app := gomelo.NewApp(
-    gomelo.WithPort(3020),
-    gomelo.WithServerID("chat-1"),
-    gomelo.WithMasterAddr("127.0.0.1:3040"),
-)
-
-app.Configure("chat", "chat")(func(s *gomelo.Server) {
-    s.SetFrontend(false)
-    s.SetPort(3020)
-})
-
-app.On("chat.send", handleChatSend)
-```
-
-## RPC 调用
-
-### 创建 RPC Client
+## Master Server
 
 ```go
-client := rpc.NewClient(&rpc.ClientOptions{
-    Host:    "127.0.0.1",
-    Port:    3020,
-    MaxConns: 5,
-    Timeout:  5 * time.Second,
-})
-```
-
-### 使用连接池
-
-```go
-pool := rpc.NewClientPool("127.0.0.1:3020", 10, 1, 5*time.Second)
-client, err := pool.GetClient()
+data, err := os.ReadFile("config/master.json")
 if err != nil {
     log.Fatal(err)
 }
-defer pool.Close()
-```
 
-### 调用示例
-
-```go
-var reply struct {
-    Code int `json:"code"`
-    Msg  string `json:"msg"`
+m := master.New()
+m.EnableAdmin(":3006")
+if err := m.Start(data); err != nil {
+    log.Fatal(err)
 }
-
-err := client.Invoke("chat", "Send", &req, &reply)
-if err != nil {
-    log.Printf("RPC error: %v", err)
-}
+m.Wait()
 ```
 
-### Notify (无响应调用)
+Master query 返回结构为：
 
-```go
-err := client.Notify("chat", "Broadcast", map[string]any{
-    "roomId": "room-1",
-    "msg":    "hello",
-})
-```
-
-## 消息转发
-
-### Forwarder
-
-消息转发器自动处理跨服务器通信：
-
-```go
-forward := forward.NewForwarder(app, selector)
-
-func handleForward(ctx *gomelo.Context) {
-    var req struct {
-        Target string `json:"target"`
-        Route  string `json:"route"`
-        Data   any    `json:"data"`
-    }
-    ctx.Bind(&req)
-
-    // 选择目标服务器
-    servers := registry.GetServersByType(req.Target)
-    if len(servers) == 0 {
-        ctx.ResponseError(errors.New("no server available"))
-        return
-    }
-
-    server := selector.Select(servers)
-    forward.Forward(ctx.Session(), ctx.Message(), server)
+```json
+{
+  "servers": {
+    "connector": [
+      {"id":"connector-1","serverType":"connector","host":"127.0.0.1","port":3010,"frontend":true}
+    ],
+    "chat": [
+      {"id":"chat-1","serverType":"chat","host":"127.0.0.1","port":3020,"frontend":false}
+    ]
+  },
+  "count": 2
 }
 ```
 
-## 服务注册与发现
+`master.Client.QueryServers()` 返回 `map[string][]*master.ServerInfo`，使用同样的 `serverType -> servers` 分组。
 
-### 注册服务
+## 前端 Connector
 
-```go
-// 连接 Master
-master := master.New("127.0.0.1:3040")
-
-// 注册当前服务器
-master.AddServer(&master.ServerInfo{
-    ID:         "connector-1",
-    ServerType: "connector",
-    Host:       "127.0.0.1",
-    Port:       3010,
-    Frontend:   true,
-})
-```
-
-### 订阅变更
+TCP 和 WebSocket connector 可以作为 App 组件注册：
 
 ```go
-registry.Watch(func(event string, servers []*registry.ServerInfo) {
-    log.Printf("Event: %s, Servers: %d", event, len(servers))
-    for _, s := range servers {
-        log.Printf("  - %s: %s:%d", s.ID, s.Host, s.Port)
-    }
-})
-```
-
-## 负载均衡策略
-
-### 随机选择
-
-```go
-sel := selector.NewRandomSelector()
-server := sel.Select(keys...)
-```
-
-### 轮询
-
-```go
-sel := selector.NewRoundRobinSelector()
-server := sel.Select(keys...)
-```
-
-### 一致性哈希
-
-适合有状态服务，减少数据迁移：
-
-```go
-sel := selector.NewConsistentHashSelector(100, nil) // 100 个虚拟节点
-sel.AddServer(serverInfo1)
-sel.AddServer(serverInfo2)
-server := sel.Select(uid) // 同一 UID 路由到同一服务器
-```
-
-## 广播
-
-### 全服广播
-
-```go
-broadcast := broadcast.NewBroadcast("announcement")
-broadcast.Broadcast("server.announcement", map[string]any{
-    "msg": "Server maintenance in 5 minutes",
-})
-```
-
-### 指定用户广播
-
-```go
-broadcast.BroadcastTo([]string{"user-1", "user-2", "user-3"}, "chat.message", map[string]any{
-    "from": "admin",
-    "msg":  "hello",
-})
-```
-
-## 完整示例
-
-### 启动 Master
-
-```go
-// master/main.go
-package main
-
-import (
-    "log"
-    "gomelo/master"
+app := gomelo.NewApp(
+    gomelo.WithServerID("connector-1"),
+    gomelo.WithHost("0.0.0.0"),
+    gomelo.WithPort(3010),
 )
 
-func main() {
-    m := master.New(":3040")
-    log.Println("Master starting on :3040")
-    if err := m.Start(); err != nil {
-        log.Fatal(err)
-    }
+conn := connector.NewServer(&connector.ServerOptions{
+    Type:     "tcp",
+    Host:     "0.0.0.0",
+    Port:     3010,
+    MaxConns: 10000,
+})
+conn.OnConnect(func(s *gomelo.Session) {
+    log.Printf("connected: %d", s.ID())
+})
+app.Register("connector", conn)
+
+app.On("connector.entryHandler.entry", entry)
+
+if err := app.Start(); err != nil {
+    log.Fatal(err)
 }
+app.Wait()
 ```
 
-### 启动 Connector
+UDP connector 直接启动：
 
 ```go
-// connector/main.go
-package main
-
-import (
-    "log"
-    "gomelo"
-    "gomelo/master"
-)
-
-func main() {
-    masterServer, _ := master.New("127.0.0.1:3040")
-
-    app := gomelo.NewApp(
-        gomelo.WithPort(3010),
-        gomelo.WithServerID("connector-1"),
-    )
-
-    app.Configure("connector", "connector")(func(s *gomelo.Server) {
-        s.SetFrontend(true)
-        s.SetPort(3010)
-    })
-
-    app.On("connector.entry", handleEntry)
-
-    app.Start(func(err error) {
-        if err != nil {
-            log.Fatal(err)
-        }
-        masterServer.AddServer(&master.ServerInfo{
-            ID:         "connector-1",
-            ServerType: "connector",
-            Host:       "127.0.0.1",
-            Port:       3010,
-        })
-    })
-}
+udp := connector.NewUDPServer(&connector.UDPServerOptions{
+    Type:     "udp",
+    Host:     "0.0.0.0",
+    Port:     3012,
+    MaxConns: 5000,
+})
+udp.SetApp(app)
+udp.Handle("connector.move", func(s *gomelo.Session, msg *gomelo.Message) (any, error) {
+    return map[string]any{"code": 0}, nil
+})
+go udp.Start()
+defer udp.Stop()
 ```
 
-### 启动 Chat Server
+TCP、WebSocket、UDP 都支持 Pipeline 和 route handler。WebSocket 读路径兼容纯 JSON frame 和带 4 字节长度头的 JSON frame。
+
+## RPC Server
+
+Remote 方法签名为：
 
 ```go
-// chat/main.go
-package main
-
-import (
-    "log"
-    "gomelo"
-    "gomelo/master"
-    "gomelo/rpc"
-)
-
-func main() {
-    masterServer, _ := master.New("127.0.0.1:3040")
-
-    app := gomelo.NewApp(
-        gomelo.WithPort(3020),
-        gomelo.WithServerID("chat-1"),
-    )
-
-    app.Configure("chat", "chat")(func(s *gomelo.Server) {
-        s.SetFrontend(false)
-        s.SetPort(3020)
-    })
-
-    // 注册 RPC Handler
-    rpcServer := rpc.NewServer(":3030")
-    rpcServer.Register(&ChatRPC{})
-    go rpcServer.Start()
-
-    app.On("chat.send", handleChatSend)
-
-    app.Start(func(err error) {
-        if err != nil {
-            log.Fatal(err)
-        }
-        masterServer.AddServer(&master.ServerInfo{
-            ID:         "chat-1",
-            ServerType: "chat",
-            Host:       "127.0.0.1",
-            Port:       3020,
-        })
-    })
-}
-
-type ChatRPC struct{}
-
-func (s *ChatRPC) Send(ctx context.Context, args struct {
-    From string `json:"from"`
-    To   string `json:"to"`
-    Msg  string `json:"msg"`
+func (r *ChatRemote) Send(ctx context.Context, args struct {
+    RoomID string `json:"roomId"`
+    Text   string `json:"text"`
 }) (any, error) {
-    log.Printf("Chat: %s -> %s: %s", args.From, args.To, args.Msg)
     return map[string]any{"code": 0}, nil
 }
 ```
 
-## 健康检查
-
-心跳检测自动移除宕机服务器：
+RPC 服务端会把 JSON args 转换为声明的参数类型，并把业务 error 返回给调用方。
 
 ```go
-master.OnStateChange(func(id string, oldState, newState int) {
-    log.Printf("Server %s state changed: %d -> %d", id, oldState, newState)
-    if newState == 3 { // 超时状态
-        log.Printf("Server %s is down", id)
-    }
-})
+srv := rpc.NewServer("127.0.0.1:3020")
+if err := srv.Register("chat", &ChatRemote{}); err != nil {
+    log.Fatal(err)
+}
+if err := srv.Start(); err != nil {
+    log.Fatal(err)
+}
+defer srv.Stop()
 ```
 
-## 最佳实践
+## RPC Client 和 Selector
 
-1. **前后端分离** - Connector 只做连接管理，业务逻辑放到后端
-2. **使用连接池** - 避免频繁创建 RPC 连接
-3. **合理选择负载均衡** - 无状态用轮询/随机，有状态用一致性哈希
-4. **监控服务器状态** - 订阅 OnStateChange 及时响应服务器下线
-5. **优雅关闭** - 关闭前先从 Master 注销
+```go
+reg := server_registry.New()
+_ = reg.Register(server_registry.ServerInfo{
+    ID: "chat-1", ServerType: "chat", Host: "127.0.0.1", Port: 3020,
+})
+
+sel := selector.New(reg)
+mgr, err := gomelo.NewRPCClientManager(reg, sel, nil)
+if err != nil {
+    log.Fatal(err)
+}
+app.SetRPCClientManager(mgr)
+
+var reply map[string]any
+err = app.RPCTo(context.Background(), "chat", "Send", map[string]any{
+    "roomId": "lobby",
+    "text":   "hello",
+}, &reply)
+```
+
+默认 selector 是轮询，并会在多次调用之间保留轮询状态。可以使用 `sel.Register(serverType, handler)` 为指定 server type 注册自定义选择策略。
+
+## Forwarding
+
+前端 connector 可以按 route 第一段转发消息。例如 `chat.send` 会选择一个 `chat` 服务，并调用 RPC service `chat`、method `send`。
+
+```go
+fwd := forward.NewForwarder(app, sel)
+_ = fwd.Start()
+defer fwd.Stop()
+
+tcp.SetForwarder(fwd)
+tcp.SetForwardSelector(sel)
+```
+
+## 代码生成
+
+```bash
+go run ./cmd/codegen ./servers
+go run ./cmd/codegen -list ./servers
+```
+
+生成的 `servers_gen.go` 必须纳入编译。它会为 Handler、Remote、Filter、Cron 文件注册 loader 回调；`loader.Load()` 扫描 `servers/` 目录时触发这些回调。
+
+## 运维建议
+
+- 保持 `serverType` 稳定，转发和 RPC 选择都依赖它。
+- 为 connector 设置 `MaxConns`，避免无限接入。
+- 创建 selector 前先把后端服务注册到 registry。
+- 代码生成后、部署前运行 `go test ./...`。

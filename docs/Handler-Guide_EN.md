@@ -22,9 +22,9 @@ Generated route format: `serverType.handlerName.methodName`
 
 | Handler | Method | Generated Route |
 |---------|--------|----------------|
-| `EntryHandler` | `Entry` | `connector.entry.entry` |
-| `ChatHandler` | `Send` | `chat.chat.send` |
-| `GameHandler` | `Battle` | `game.game.battle` |
+| `EntryHandler` | `Entry` | `connector.entryHandler.entry` |
+| `ChatHandler` | `Send` | `chat.chatHandler.send` |
+| `GameHandler` | `Battle` | `game.gameHandler.battle` |
 
 ## Context Common Methods
 
@@ -37,7 +37,7 @@ func handleEntry(ctx *gomelo.Context) {
         Name  string `json:"name"`
     }
     if err := ctx.Bind(&req); err != nil {
-        ctx.ResponseError(gomelo.ErrInvalidRoute)
+        ctx.ResponseError(1001, "invalid request")
         return
     }
 
@@ -68,7 +68,7 @@ uid := session.UID()
 ### Get Message
 
 ```go
-msg := ctx.Message()
+msg := ctx.Request()
 log.Printf("Route: %s, Body: %v", msg.Route, msg.Body)
 ```
 
@@ -87,7 +87,7 @@ func (h *ConnectorHandler) Entry(ctx *gomelo.Context) {
     }
     ctx.Bind(&req)
 
-    uid := "user-" + ctx.Session().ID()
+    uid := fmt.Sprintf("user-%d", ctx.Session().ID())
     ctx.Session().Bind(uid)
 
     ctx.Response(map[string]any{
@@ -115,30 +115,26 @@ app.On("connector.heartbeat", handler.Heartbeat)
 ### Use Predefined Errors
 
 ```go
-ctx.ResponseError(gomelo.ErrUnauthorized)
-ctx.ResponseError(gomelo.ErrInvalidRoute)
-ctx.ResponseError(gomelo.ErrTimeout)
+ctx.ResponseError(401, "unauthorized")
+ctx.ResponseError(1001, "invalid route")
+ctx.ResponseError(1004, "timeout")
 ```
 
 ### Custom Error
 
 ```go
-ctx.ResponseError(fmt.Errorf("custom error: %w", someErr))
+ctx.ResponseError(500, fmt.Sprintf("custom error: %v", someErr))
 ```
 
 ## Pre-processing - Middleware
 
-Use `app.Before()` to add pre-processing:
+Use `app.Before()` to add pre-processing filters:
 
 ```go
-app.Before(handleAuth)
-app.Before(handleLog)
-```
+type AuthFilter struct{}
 
-Middleware signature:
-
-```go
-func handleAuth(ctx *gomelo.Context) bool {
+func (AuthFilter) Name() string { return "auth" }
+func (AuthFilter) Process(ctx *gomelo.Context) bool {
     token := ctx.Session().Get("token")
     if token == nil {
         ctx.Response(map[string]any{"code": 401, "msg": "unauthorized"})
@@ -146,18 +142,23 @@ func handleAuth(ctx *gomelo.Context) bool {
     }
     return true
 }
+func (AuthFilter) After(ctx *gomelo.Context) {}
+
+app.Before(AuthFilter{})
 ```
 
 ## Post-processing - AfterFilter
 
 ```go
-app.After(handleAfter)
-```
+type LogFilter struct{}
 
-```go
-func handleAfter(ctx *gomelo.Context) {
+func (LogFilter) Name() string { return "log" }
+func (LogFilter) Process(ctx *gomelo.Context) bool { return true }
+func (LogFilter) After(ctx *gomelo.Context) {
     log.Printf("Request completed: %s", ctx.Route)
 }
+
+app.After(LogFilter{})
 ```
 
 ## Complete Example
@@ -168,7 +169,8 @@ package main
 import (
 	"log"
 	"strconv"
-	"gomelo"
+	"github.com/chuhongliang/gomelo"
+	"github.com/chuhongliang/gomelo/connector"
 )
 
 func main() {
@@ -177,29 +179,32 @@ func main() {
 		gomelo.WithServerID("connector-1"),
 	)
 
-	app.Configure("connector", "connector")(func(s *gomelo.Server) {
-		s.SetFrontend(true)
-		s.SetPort(3010)
-		s.OnConnection(func(session *gomelo.Session) {
-			log.Printf("Client connected: %d", session.ID())
-		})
+	conn := connector.NewServer(&connector.ServerOptions{
+		Type: "tcp",
+		Host: "0.0.0.0",
+		Port: 3010,
 	})
+	conn.OnConnect(func(session *gomelo.Session) {
+		log.Printf("Client connected: %d", session.ID())
+	})
+	app.Register("connector", conn)
 
-	app.Before(authMiddleware)
+	app.Before(AuthFilter{})
 
 	app.On("connector.entry", handleEntry)
 	app.On("connector.heartbeat", handleHeartbeat)
 	app.On("chat.send", handleChatSend)
 
-	app.Start(func(err error) {
-		if err != nil {
-			log.Fatal(err)
-		}
-	})
+	if err := app.Start(); err != nil {
+		log.Fatal(err)
+	}
 	app.Wait()
 }
 
-func authMiddleware(ctx *gomelo.Context) bool {
+type AuthFilter struct{}
+
+func (AuthFilter) Name() string { return "auth" }
+func (AuthFilter) Process(ctx *gomelo.Context) bool {
 	token := ctx.Session().Get("token")
 	if token == nil {
 		ctx.Response(map[string]any{"code": 401, "msg": "no token"})
@@ -207,6 +212,7 @@ func authMiddleware(ctx *gomelo.Context) bool {
 	}
 	return true
 }
+func (AuthFilter) After(ctx *gomelo.Context) {}
 
 func handleEntry(ctx *gomelo.Context) {
 	var req struct {
@@ -284,7 +290,7 @@ servers/
 // servers/connector/handler/entry.go
 package handler
 
-import "gomelo/lib"
+import "github.com/chuhongliang/gomelo/lib"
 
 type EntryHandler struct {
     app *lib.App
@@ -305,9 +311,12 @@ func (h *EntryHandler) Entry(ctx *lib.Context) {
 
 ```bash
 go run ./cmd/codegen ./servers
+
+# list routes only
+go run ./cmd/codegen -list ./servers
 ```
 
-Generates `servers_gen.go` with all Handlers and Remotes auto-registered.
+Generates `servers_gen.go` with Handler, Remote, Filter, and Cron registration callbacks. Include this file in the build. `loader.Load()` scans the `servers/` tree and invokes the generated callbacks by file key.
 
 ### Output All Routes (for clients)
 
@@ -333,19 +342,18 @@ Remote Routes: [game.gameHandler.addGame game.gameHandler.start]
 ```go
 // servers_gen.go (auto-generated)
 func init() {
-    l := loader.GlobalLoader()
-    if l == nil { return }
-
-    hEntryHandler := &handler.EntryHandler{}
-    vEntryHandler := loader.ReflectValueOf(hEntryHandler)
-    tEntryHandler := vEntryHandler.Type()
-    for i := 0; i < tEntryHandler.NumMethod(); i++ {
-        m := tEntryHandler.Method(i)
-        if loader.IsHandlerMethod(m) {
-            route := loader.BuildRoute("connector", tEntryHandler.Elem().Name(), m.Name)
-            l.RegisterHandlerMethod("connector", route, hEntryHandler, m)
+    loader.RegisterHandler("connector/handler/entry", func(l *loader.Loader, serverType string) {
+        hEntryHandler := &handler.EntryHandler{}
+        vEntryHandler := loader.ReflectValueOf(hEntryHandler)
+        tEntryHandler := vEntryHandler.Type()
+        for i := 0; i < tEntryHandler.NumMethod(); i++ {
+            m := tEntryHandler.Method(i)
+            if loader.IsHandlerMethod(m) {
+                route := loader.BuildRoute(serverType, tEntryHandler.Elem().Name(), m.Name)
+                l.RegisterHandlerMethod(serverType, route, hEntryHandler, m)
+            }
         }
-    }
+    })
 }
 ```
 
@@ -356,11 +364,11 @@ func init() {
 | `EntryHandler.Entry` | `connector.entryHandler.entry` |
 | `ChatHandler.Send` | `connector.chatHandler.send` |
 
-Combine with `app.Route()` to customize route prefix.
+Manual route aliases can be added with `app.On(route, handler)`.
 
 ### Init Callback
 
-If Handler implements `Init(app *lib.App)`, it will be called automatically after registration:
+Generated registration constructs handler values directly. If a handler needs `*lib.App`, wire it explicitly in your own registration path or extend the generated callback:
 
 ```go
 func (h *EntryHandler) Init(app *lib.App) {

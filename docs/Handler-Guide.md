@@ -22,9 +22,9 @@ go run ./cmd/codegen ./servers
 
 | 处理器 | 方法 | 生成路由 |
 |--------|------|----------|
-| `EntryHandler` | `Entry` | `connector.entry.entry` |
-| `ChatHandler` | `Send` | `chat.chat.send` |
-| `GameHandler` | `Battle` | `game.game.battle` |
+| `EntryHandler` | `Entry` | `connector.entryHandler.entry` |
+| `ChatHandler` | `Send` | `chat.chatHandler.send` |
+| `GameHandler` | `Battle` | `game.gameHandler.battle` |
 
 ## Context 常用方法
 
@@ -37,7 +37,7 @@ func handleEntry(ctx *gomelo.Context) {
         Name  string `json:"name"`
     }
     if err := ctx.Bind(&req); err != nil {
-        ctx.ResponseError(gomelo.ErrInvalidRoute)
+        ctx.ResponseError(1001, "invalid request")
         return
     }
 
@@ -68,7 +68,7 @@ uid := session.UID()
 ### 获取 Message
 
 ```go
-msg := ctx.Message()
+msg := ctx.Request()
 log.Printf("Route: %s, Body: %v", msg.Route, msg.Body)
 ```
 
@@ -87,7 +87,7 @@ func (h *ConnectorHandler) Entry(ctx *gomelo.Context) {
     }
     ctx.Bind(&req)
 
-    uid := "user-" + ctx.Session().ID()
+    uid := fmt.Sprintf("user-%d", ctx.Session().ID())
     ctx.Session().Bind(uid)
 
     ctx.Response(map[string]any{
@@ -115,30 +115,26 @@ app.On("connector.heartbeat", handler.Heartbeat)
 ### 使用预定义错误
 
 ```go
-ctx.ResponseError(gomelo.ErrUnauthorized)
-ctx.ResponseError(gomelo.ErrInvalidRoute)
-ctx.ResponseError(gomelo.ErrTimeout)
+ctx.ResponseError(401, "unauthorized")
+ctx.ResponseError(1001, "invalid route")
+ctx.ResponseError(1004, "timeout")
 ```
 
 ### 自定义错误
 
 ```go
-ctx.ResponseError(fmt.Errorf("custom error: %w", someErr))
+ctx.ResponseError(500, fmt.Sprintf("custom error: %v", someErr))
 ```
 
 ## 前置处理 - Middleware
 
-使用 `app.Before()` 添加前置处理：
+使用 `app.Before()` 添加前置 Filter：
 
 ```go
-app.Before(handleAuth)
-app.Before(handleLog)
-```
+type AuthFilter struct{}
 
-Middleware 函数签名：
-
-```go
-func handleAuth(ctx *gomelo.Context) bool {
+func (AuthFilter) Name() string { return "auth" }
+func (AuthFilter) Process(ctx *gomelo.Context) bool {
     token := ctx.Session().Get("token")
     if token == nil {
         ctx.Response(map[string]any{"code": 401, "msg": "unauthorized"})
@@ -146,18 +142,23 @@ func handleAuth(ctx *gomelo.Context) bool {
     }
     return true
 }
+func (AuthFilter) After(ctx *gomelo.Context) {}
+
+app.Before(AuthFilter{})
 ```
 
 ## 后置处理 - AfterFilter
 
 ```go
-app.After(handleAfter)
-```
+type LogFilter struct{}
 
-```go
-func handleAfter(ctx *gomelo.Context) {
+func (LogFilter) Name() string { return "log" }
+func (LogFilter) Process(ctx *gomelo.Context) bool { return true }
+func (LogFilter) After(ctx *gomelo.Context) {
     log.Printf("Request completed: %s", ctx.Route)
 }
+
+app.After(LogFilter{})
 ```
 
 ## 完整示例
@@ -168,7 +169,9 @@ package main
 import (
 	"log"
 	"strconv"
-	"gomelo"
+
+	"github.com/chuhongliang/gomelo"
+	"github.com/chuhongliang/gomelo/connector"
 )
 
 func main() {
@@ -177,29 +180,32 @@ func main() {
 		gomelo.WithServerID("connector-1"),
 	)
 
-	app.Configure("connector", "connector")(func(s *gomelo.Server) {
-		s.SetFrontend(true)
-		s.SetPort(3010)
-		s.OnConnection(func(session *gomelo.Session) {
-			log.Printf("Client connected: %d", session.ID())
-		})
+	conn := connector.NewServer(&connector.ServerOptions{
+		Type: "tcp",
+		Host: "0.0.0.0",
+		Port: 3010,
 	})
+	conn.OnConnect(func(session *gomelo.Session) {
+		log.Printf("Client connected: %d", session.ID())
+	})
+	app.Register("connector", conn)
 
-	app.Before(authMiddleware)
+	app.Before(AuthFilter{})
 
 	app.On("connector.entry", handleEntry)
 	app.On("connector.heartbeat", handleHeartbeat)
 	app.On("chat.send", handleChatSend)
 
-	app.Start(func(err error) {
-		if err != nil {
-			log.Fatal(err)
-		}
-	})
+	if err := app.Start(); err != nil {
+		log.Fatal(err)
+	}
 	app.Wait()
 }
 
-func authMiddleware(ctx *gomelo.Context) bool {
+type AuthFilter struct{}
+
+func (AuthFilter) Name() string { return "auth" }
+func (AuthFilter) Process(ctx *gomelo.Context) bool {
 	token := ctx.Session().Get("token")
 	if token == nil {
 		ctx.Response(map[string]any{"code": 401, "msg": "no token"})
@@ -207,6 +213,7 @@ func authMiddleware(ctx *gomelo.Context) bool {
 	}
 	return true
 }
+func (AuthFilter) After(ctx *gomelo.Context) {}
 
 func handleEntry(ctx *gomelo.Context) {
 	var req struct {
@@ -285,7 +292,7 @@ servers/
 // servers/connector/handler/entry.go
 package handler
 
-import "gomelo/lib"
+import "github.com/chuhongliang/gomelo/lib"
 
 type EntryHandler struct {
     app *lib.App
@@ -306,9 +313,12 @@ func (h *EntryHandler) Entry(ctx *lib.Context) {
 
 ```bash
 go run ./cmd/codegen ./servers
+
+# 仅列出路由
+go run ./cmd/codegen -list ./servers
 ```
 
-生成 `servers_gen.go`，自动注册所有 Handler 和 Remote。
+生成 `servers_gen.go`，包含 Handler、Remote、Filter、Cron 的注册回调。生成文件需要纳入编译；`loader.Load()` 扫描 `servers/` 目录时会按文件 key 触发这些回调。
 
 ### 输出所有路由（供客户端使用）
 
@@ -334,19 +344,18 @@ Remote Routes: [game.gameHandler.addGame game.gameHandler.start]
 ```go
 // servers_gen.go (自动生成)
 func init() {
-    l := loader.GlobalLoader()
-    if l == nil { return }
-
-    hEntryHandler := &handler.EntryHandler{}
-    vEntryHandler := loader.ReflectValueOf(hEntryHandler)
-    tEntryHandler := vEntryHandler.Type()
-    for i := 0; i < tEntryHandler.NumMethod(); i++ {
-        m := tEntryHandler.Method(i)
-        if loader.IsHandlerMethod(m) {
-            route := loader.BuildRoute("connector", tEntryHandler.Elem().Name(), m.Name)
-            l.RegisterHandlerMethod("connector", route, hEntryHandler, m)
+    loader.RegisterHandler("connector/handler/entry", func(l *loader.Loader, serverType string) {
+        hEntryHandler := &handler.EntryHandler{}
+        vEntryHandler := loader.ReflectValueOf(hEntryHandler)
+        tEntryHandler := vEntryHandler.Type()
+        for i := 0; i < tEntryHandler.NumMethod(); i++ {
+            m := tEntryHandler.Method(i)
+            if loader.IsHandlerMethod(m) {
+                route := loader.BuildRoute(serverType, tEntryHandler.Elem().Name(), m.Name)
+                l.RegisterHandlerMethod(serverType, route, hEntryHandler, m)
+            }
         }
-    }
+    })
 }
 ```
 
@@ -357,11 +366,11 @@ func init() {
 | `EntryHandler.Entry` | `connector.entryHandler.entry` |
 | `ChatHandler.Send` | `connector.chatHandler.send` |
 
-可结合 `app.Route()` 自定义路由前缀。
+可以用 `app.On(route, handler)` 额外注册手写路由别名。
 
 ### 初始化回调
 
-如果 Handler 实现了 `Init(app *lib.App)` 方法，会在注册后自动调用：
+生成代码会直接构造 Handler 实例。若 Handler 需要 `*lib.App`，请在手写注册路径中注入，或按项目需要扩展生成回调：
 
 ```go
 func (h *EntryHandler) Init(app *lib.App) {

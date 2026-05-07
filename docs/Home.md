@@ -17,9 +17,9 @@
 
 #### 应用 (App)
 - 创建应用：`gomelo.NewApp()`
-- 配置服务器：`app.Configure(env, type)`
+- 注册 connector 组件：`app.Register(name, connector)`
 - 注册路由：`app.On(route, handler)`
-- 启动/停止：`app.Start()` / `app.Stop()`
+- 启动/停止：`app.Start()` / `app.Stop(false)`
 
 #### 会话 (Session)
 - 获取当前会话：`ctx.Session()`
@@ -35,37 +35,41 @@
 
 #### 过滤器 (Filter/Middleware)
 ```go
-func authMiddleware(ctx *gomelo.Context) bool {
+type AuthFilter struct{}
+
+func (AuthFilter) Name() string { return "auth" }
+func (AuthFilter) Process(ctx *gomelo.Context) bool {
     if ctx.Session().Get("token") == nil {
         ctx.Response(map[string]any{"code": 401})
         return false
     }
     return true
 }
+func (AuthFilter) After(ctx *gomelo.Context) {}
 
-app.Before(authMiddleware)
+app.Before(AuthFilter{})
 ```
 
 ### 分布式
 
 #### Master Server
 ```go
-master := master.New(":3040")
-master.Start()
+data, _ := os.ReadFile("config/master.json")
+m := master.New()
+_ = m.Start(data)
 ```
 
 #### RPC 调用
 ```go
 client, _ := rpc.NewClient(&rpc.ClientOptions{Host: "127.0.0.1", Port: 3020})
-client.Invoke("service", "method", &args, &reply)
+_ = client.Invoke("service", "method", args, &reply)
 ```
 
 #### 服务发现
 ```go
-reg := registry.New()
-reg.Watch(func(event string, servers []*ServerInfo) {
-    // 监听变更
-})
+reg := server_registry.New()
+ch := make(chan []server_registry.ServerInfo, 16)
+reg.Watch(ch)
 ```
 
 ### 生产级功能
@@ -97,7 +101,7 @@ http.Handle("/metrics", m.Handler())
 ```go
 import "github.com/chuhongliang/gomelo/errors"
 
-ctx.ResponseError(errors.ErrBadRequest.WithMessage("name is required"))
+ctx.ResponseError(int(errors.BadRequest), "name is required")
 ```
 
 #### 热更新

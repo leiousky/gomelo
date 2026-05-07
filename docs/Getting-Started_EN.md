@@ -17,7 +17,7 @@ go install github.com/chuhongliang/gomelo/cmd/gomelo@latest
 ### Method 2: Manual build
 
 ```bash
-git clone https://github.com/gomelo/gomelo.git
+git clone https://github.com/chuhongliang/gomelo.git
 cd gomelo
 go build -o bin/gomelo ./cmd/gomelo
 ```
@@ -83,7 +83,9 @@ package main
 
 import (
 	"log"
-	"gomelo"
+
+	"github.com/chuhongliang/gomelo"
+	"github.com/chuhongliang/gomelo/connector"
 )
 
 func main() {
@@ -93,18 +95,17 @@ func main() {
 		gomelo.WithServerID("connector-1"),
 	)
 
-	app.Configure("connector", "connector")(func(s *gomelo.Server) {
-		s.SetFrontend(true)
-		s.SetPort(3010)
+	conn := connector.NewServer(&connector.ServerOptions{
+		Type: "tcp",
+		Host: "0.0.0.0",
+		Port: 3010,
 	})
+	app.Register("connector", conn)
 
-	// Auto-register handlers from servers/connector/handler on startup
-	app.Start(func(err error) {
-		if err != nil {
-			log.Fatal(err)
-		}
-		log.Println("Server started on :3010")
-	})
+	if err := app.Start(); err != nil {
+		log.Fatal(err)
+	}
+	log.Println("Server started on :3010")
 
 	app.Wait()
 }
@@ -136,7 +137,7 @@ func (h *EntryHandler) Entry(ctx *gomelo.Context) {
 }
 ```
 
-Auto-generated route: `connector.entry.entry`
+Auto-generated route: `connector.entryHandler.entry`
 
 ### config.json
 
@@ -160,12 +161,10 @@ Auto-generated route: `connector.entry.entry`
 
 ## Testing
 
-Test with curl:
+This is a TCP/WebSocket/UDP server, not an HTTP handler. Test it with one of the gomelo clients or the demo/robot tools:
 
 ```bash
-curl -X POST http://localhost:3010/connector.entry \
-  -H "Content-Type: application/json" \
-  -d '{"name":"player1"}'
+go run ./client/go/demo
 ```
 
 Expected response:

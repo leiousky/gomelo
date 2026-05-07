@@ -19,14 +19,14 @@
 
 ## 1. 核心类型 (Core Types)
 
-### ServerMode
-服务器运行模式
+### App State
+应用生命周期状态
 ```go
-type ServerMode int
 const (
-    Standalone ServerMode = iota  // 独立模式
-    Frontend                  // 前端服务器模式
-    Backend                  // 后端服务器模式
+    StateInited  int = 1
+    StateStart   int = 2
+    StateStarted int = 3
+    StateStopped int = 4
 )
 ```
 
@@ -64,7 +64,7 @@ const (
 #### NewApp
 创建新的应用实例
 ```go
-func NewApp(opts ...Option) *App
+func NewApp(opts ...lib.AppOption) *lib.App
 ```
 **示例**:
 ```go
@@ -74,34 +74,28 @@ app := gomelo.NewApp(
 )
 ```
 
-#### WithMode
-设置服务器模式
-```go
-func WithMode(mode ServerMode) Option
-```
-
 #### WithHost
 设置监听主机
 ```go
-func WithHost(host string) Option
+func WithHost(host string) lib.AppOption
 ```
 
 #### WithPort
 设置监听端口
 ```go
-func WithPort(port int) Option
+func WithPort(port int) lib.AppOption
 ```
 
 #### WithServerID
 设置服务器ID
 ```go
-func WithServerID(id string) Option
+func WithServerID(id string) lib.AppOption
 ```
 
 #### WithMasterAddr
 设置Master服务器地址
 ```go
-func WithMasterAddr(addr string) Option
+func WithMasterAddr(addr string) lib.AppOption
 ```
 
 ### 方法
@@ -109,10 +103,11 @@ func WithMasterAddr(addr string) Option
 #### Register
 注册组件
 ```go
-func (a *App) Register(c Component)
+func (a *App) Register(name string, comp Component)
 ```
 **参数**:
-- `c` - 组件实例
+- `name` - 组件名
+- `comp` - 组件实例
 
 #### SetRoute
 设置路由处理器
@@ -126,7 +121,7 @@ func (a *App) SetRoute(serverType string, handler RouteHandler)
 #### Use
 添加中间件
 ```go
-func (a *App) Use(m ...Middleware)
+func (a *App) Use(m Middleware)
 ```
 **参数**:
 - `m` - 中间件函数
@@ -157,10 +152,10 @@ app.On("connector.entry", func(ctx *gomelo.Context) {
 #### Configure
 配置服务器
 ```go
-func (a *App) Configure(serverType string, fn func(*Server))
+func (a *App) Configure(fn func(*Server))
+func (a *App) ConfigureWithEnv(env string, serverType ...string) func(fn func(*Server))
 ```
 **参数**:
-- `serverType` - 服务器类型
 - `fn` - 配置函数
 
 #### Start
@@ -172,7 +167,7 @@ func (a *App) Start() error
 #### Stop
 停止应用
 ```go
-func (a *App) Stop() error
+func (a *App) Stop(force bool) error
 ```
 
 #### Wait
@@ -481,6 +476,7 @@ RPC客户端接口
 type RPCClient interface {
     Close()
     Invoke(service, method string, args, reply any) error
+    InvokeCtx(ctx context.Context, service, method string, args, reply any) error
     Notify(service, method string, args any) error
 }
 ```
@@ -489,12 +485,14 @@ type RPCClient interface {
 RPC客户端选项
 ```go
 type ClientOptions struct {
-    Host      string
-    Port      int
-    MaxConns  int
-    MinConns  int
-    KeepAlive time.Duration
-    IdleTime  time.Duration
+    Host            string
+    Port            int
+    MaxConns        int
+    MinConns        int
+    KeepAlive       time.Duration
+    IdleTime        time.Duration
+    Timeout         time.Duration
+    MaxResponseSize int
 }
 ```
 
@@ -507,21 +505,36 @@ type RPCServer interface {
     Register(service string, impl any) error
     Start() error
     Stop()
+    Addrs() map[string]string
 }
 ```
+
+Remote 方法签名：
+
+```go
+func (r *ChatRemote) Send(ctx context.Context, args struct {
+    RoomID string `json:"roomId"`
+    Text   string `json:"text"`
+}) (any, error)
+```
+
+RPC 服务端会把 JSON 参数转换为声明的 args 类型，并把返回的 error 传回调用方。
 
 ### 8.3 注册中心
 
 #### Registry
 服务注册中心接口
 ```go
-type Registry interface {
-    Register(server *ServerInfo) error
+type ServerRegistry interface {
+    Register(server ServerInfo) error
     Unregister(serverID string) error
-    GetServer(serverType string) (*ServerInfo, bool)
-    GetServers(serverType string) []*ServerInfo
-    GetAllServers() map[string][]*ServerInfo
-    Watch(callback WatchCallback)
+    GetServer(serverID string) (ServerInfo, bool)
+    GetServersByType(serverType string) []ServerInfo
+    GetAllServers() []ServerInfo
+    GetServerTypes() []string
+    Watch(ch chan<- []ServerInfo)
+    SetEventHandler(handler RegistryEventHandler)
+    Close()
 }
 ```
 
@@ -530,32 +543,21 @@ type Registry interface {
 ```go
 type ServerInfo struct {
     ID         string
-    Type       string
+    ServerType string
     Host       string
     Port       int
-    State      ServerState
+    Frontend   bool
+    State      int
     Count      int
-    RegisterAt time.Time
-    LastUpdate time.Time
+    RegisterAt int64
+    LastUpdate int64
+    Metadata   map[string]any
 }
 ```
-
-#### ServerState
-服务器状态
-```go
-type ServerState int
-const (
-    StateStarting ServerState = iota
-    StateRunning
-    StateRunningHalf
-    StateStopped
-)
-```
-
-#### NewLocalRegistry
+#### New
 创建本地注册中心
 ```go
-func NewLocalRegistry() Registry
+func server_registry.New() ServerRegistry
 ```
 
 ### 8.4 选择器
@@ -564,22 +566,23 @@ func NewLocalRegistry() Registry
 服务器选择器接口
 ```go
 type Selector interface {
-    Select(serverType string) *ServerInfo
-    SelectMulti(serverType string, n int) []*ServerInfo
+    Select(serverType string) server_registry.ServerInfo
+    SelectMulti(serverType string, n int) []server_registry.ServerInfo
     Register(serverType string, handler SelectorHandler)
+    GetStats() (total, fail int64)
 }
 ```
 
 #### SelectorHandler
 选择器处理函数
 ```go
-type SelectorHandler func([]*ServerInfo) *ServerInfo
+type SelectorHandler func([]server_registry.ServerInfo) server_registry.ServerInfo
 ```
 
 #### NewSelector
 创建选择器
 ```go
-func NewSelector(reg Registry) Selector
+func selector.New(reg server_registry.ServerRegistry) Selector
 ```
 
 #### LoadBalancer
@@ -1030,7 +1033,9 @@ package main
 
 import (
     "log"
-    "gomelo-go"
+
+    "github.com/chuhongliang/gomelo"
+    "github.com/chuhongliang/gomelo/connector"
 )
 
 func main() {
@@ -1040,21 +1045,15 @@ func main() {
         gomelo.WithPort(3010),
     )
     
-    // 配置前端服务器
-    app.Configure("connector", func(s *gomelo.Server) {
-        s.SetFrontend(true)
-        s.SetPort(3010)
-        
-        // 连接回调
-        s.OnConnection(func(session *gomelo.Session) {
-            log.Printf("New connection: %d", session.ID)
-        })
-        
-        // 消息回调
-        s.OnMessage(func(session *gomelo.Session, msg *gomelo.Message) {
-            log.Printf("Message: %s", msg.Route)
-        })
+    conn := connector.NewServer(&connector.ServerOptions{
+        Type: "tcp",
+        Host: "0.0.0.0",
+        Port: 3010,
     })
+    conn.OnConnect(func(session *gomelo.Session) {
+        log.Printf("New connection: %d", session.ID())
+    })
+    app.Register("connector", conn)
     
     // 添加中间件
     app.Use(func(next gomelo.HandlerFunc) gomelo.HandlerFunc {

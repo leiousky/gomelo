@@ -63,23 +63,21 @@ session.Remove("vip")
 
 ## Connection Callbacks
 
-Set connection/disconnection callbacks in Server config:
+Set connection/disconnection callbacks on the connector:
 
 ```go
-app.Configure("connector", "connector")(func(s *gomelo.Server) {
-    s.OnConnection(func(session *gomelo.Session) {
-        log.Printf("Client connected: %d", session.ID())
-    })
-
-    s.OnClose(func(session *gomelo.Session) {
-        log.Printf("Client disconnected: %d", session.ID())
-        // Cleanup player data
-        uid := session.UID()
-        if uid != "" {
-            playerManager.Remove(uid)
-        }
-    })
+conn := connector.NewServer(&connector.ServerOptions{Host: "0.0.0.0", Port: 3010})
+conn.OnConnect(func(session *gomelo.Session) {
+    log.Printf("Client connected: %d", session.ID())
 })
+conn.OnClose(func(session *gomelo.Session) {
+    log.Printf("Client disconnected: %d", session.ID())
+    uid := session.UID()
+    if uid != "" {
+        playerManager.Remove(uid)
+    }
+})
+app.Register("connector", conn)
 ```
 
 ## Session Lifecycle
@@ -89,7 +87,7 @@ app.Configure("connector", "connector")(func(s *gomelo.Server) {
 Session created when client connects:
 
 ```go
-s.OnConnection(func(session *gomelo.Session) {
+conn.OnConnect(func(session *gomelo.Session) {
     session.Set("connectedAt", time.Now().Unix())
 })
 ```
@@ -125,11 +123,11 @@ func handleLogin(ctx *gomelo.Context) {
 Cleanup data when Session closes:
 
 ```go
-s.OnClose(func(session *gomelo.Session) {
+conn.OnClose(func(session *gomelo.Session) {
     uid := session.UID()
     if uid != "" {
         // Save player data
-        savePlayerData(uid, session.GetAll())
+        savePlayerData(uid, session.KV())
         // Remove from online list
         onlinePlayers.Remove(uid)
         // Notify other players
@@ -199,7 +197,8 @@ import (
 	"sync"
 	"time"
 
-	"gomelo"
+	"github.com/chuhongliang/gomelo"
+	"github.com/chuhongliang/gomelo/connector"
 )
 
 type PlayerManager struct {
@@ -224,33 +223,31 @@ func main() {
 		gomelo.WithServerID("connector-1"),
 	)
 
-	app.Configure("connector", "connector")(func(s *gomelo.Server) {
-		s.SetFrontend(true)
-		s.SetPort(3010)
-
-		s.OnConnection(func(session *gomelo.Session) {
-			log.Printf("Client connected: %d", session.ID())
-			session.Set("connectedAt", time.Now().Unix())
-		})
-
-		s.OnClose(func(session *gomelo.Session) {
-			uid := session.UID()
-			if uid != "" {
-				playerMgr.Remove(uid)
-				log.Printf("Player left: %s", uid)
-			}
-		})
+	conn := connector.NewServer(&connector.ServerOptions{
+		Type: "tcp",
+		Host: "0.0.0.0",
+		Port: 3010,
 	})
+	conn.OnConnect(func(session *gomelo.Session) {
+		log.Printf("Client connected: %d", session.ID())
+		session.Set("connectedAt", time.Now().Unix())
+	})
+	conn.OnClose(func(session *gomelo.Session) {
+		uid := session.UID()
+		if uid != "" {
+			playerMgr.Remove(uid)
+			log.Printf("Player left: %s", uid)
+		}
+	})
+	app.Register("connector", conn)
 
 	app.On("connector.login", handleLogin)
 	app.On("connector.logout", handleLogout)
 	app.On("player.getInfo", handleGetInfo)
 
-	app.Start(func(err error) {
-		if err != nil {
-			log.Fatal(err)
-		}
-	})
+	if err := app.Start(); err != nil {
+		log.Fatal(err)
+	}
 	app.Wait()
 }
 

@@ -63,34 +63,51 @@ gomelo supports TCP, WebSocket, and UDP network protocols. Choose the appropriat
 ### TCP (Default, Recommended for Real-time Action Games)
 
 ```go
-app.Configure("connector", "connector-tcp")(func(s *gomelo.Server) {
-    s.SetFrontend(true)
-    s.SetPort(3010)
-    s.SetMaxConns(10000)
-    s.SetHeartbeat(30 * time.Second, 90 * time.Second)
+import "github.com/chuhongliang/gomelo/connector"
+
+tcp := connector.NewServer(&connector.ServerOptions{
+    Type:              "tcp",
+    Host:              "0.0.0.0",
+    Port:              3010,
+    MaxConns:          10000,
+    HeartbeatInterval: 30 * time.Second,
+    HeartbeatTimeout:  90 * time.Second,
 })
+app.Register("connector-tcp", tcp)
 ```
 
 ### WebSocket (Suitable for HTML5 Games, Mobile)
 
 ```go
-app.Configure("connector", "connector-ws")(func(s *gomelo.WebSocketServer) {
-    s.SetFrontend(true)
-    s.SetPort(3011)
-    s.SetMaxConns(5000)
-    s.SetHeartbeat(30 * time.Second, 90 * time.Second)
+import "github.com/chuhongliang/gomelo/connector"
+
+ws := connector.NewWebSocketServer(&connector.WebSocketOptions{
+    Type:              "ws",
+    Host:              "0.0.0.0",
+    Port:              3011,
+    MaxConns:          5000,
+    HeartbeatInterval: 30 * time.Second,
+    HeartbeatTimeout:  90 * time.Second,
 })
+app.Register("connector-ws", ws)
 ```
 
 ### UDP (For Latency-Sensitive Games: MOBA, FPS, Rhythm)
 
 ```go
-app.Configure("connector", "connector-udp")(func(s *gomelo.UDPServer) {
-    s.SetFrontend(true)
-    s.SetPort(3012)
-    s.SetMaxConns(5000)
-    s.SetHeartbeat(10 * time.Second, 30 * time.Second)
+import "github.com/chuhongliang/gomelo/connector"
+
+udp := connector.NewUDPServer(&connector.UDPServerOptions{
+    Type:              "udp",
+    Host:              "0.0.0.0",
+    Port:              3012,
+    MaxConns:          5000,
+    HeartbeatInterval: 10 * time.Second,
+    HeartbeatTimeout:  30 * time.Second,
 })
+udp.SetApp(app)
+go udp.Start()
+defer udp.Stop()
 ```
 
 ### Protocol Comparison
@@ -107,15 +124,11 @@ The same server can listen on multiple protocols:
 
 ```go
 // TCP + WebSocket
-app.Configure("connector", "connector-tcp")(func(s *gomelo.Server) {
-    s.SetFrontend(true)
-    s.SetPort(3010)
-})
+tcp := connector.NewServer(&connector.ServerOptions{Host: "0.0.0.0", Port: 3010})
+app.Register("connector-tcp", tcp)
 
-app.Configure("connector", "connector-ws")(func(s *gomelo.WebSocketServer) {
-    s.SetFrontend(true)
-    s.SetPort(3011)
-})
+ws := connector.NewWebSocketServer(&connector.WebSocketOptions{Host: "0.0.0.0", Port: 3011})
+app.Register("connector-ws", ws)
 ```
 
 ## Project Structure
@@ -153,7 +166,9 @@ package main
 
 import (
 	"log"
-	"gomelo"
+
+	"github.com/chuhongliang/gomelo"
+	"github.com/chuhongliang/gomelo/connector"
 )
 
 func main() {
@@ -163,19 +178,18 @@ func main() {
 		gomelo.WithServerID("connector-1"),
 	)
 
-	app.Configure("connector", "connector")(func(s *gomelo.Server) {
-		s.SetFrontend(true)
-		s.SetPort(3010)
+	conn := connector.NewServer(&connector.ServerOptions{
+		Type: "tcp",
+		Host: "0.0.0.0",
+		Port: 3010,
 	})
+	app.Register("connector", conn)
 
-	// Auto-register handlers from servers/connector/handler on startup
 	log.Println("Starting server...")
-	app.Start(func(err error) {
-		if err != nil {
-			log.Fatal(err)
-		}
-		log.Println("Server started!")
-	})
+	if err := app.Start(); err != nil {
+		log.Fatal(err)
+	}
+	log.Println("Server started!")
 
 	app.Wait()
 }
@@ -207,7 +221,7 @@ func (h *EntryHandler) Entry(ctx *gomelo.Context) {
 }
 ```
 
-Auto-generated route: `connector.entry.entry`
+Auto-generated route: `connector.entryHandler.entry`
 
 ### Unified Error Codes
 
@@ -221,7 +235,7 @@ func (h *EntryHandler) Entry(ctx *gomelo.Context) {
 	ctx.Bind(&req)
 
 	if req.Name == "" {
-		ctx.ResponseError(errors.ErrBadRequest.WithMessage("name is required"))
+		ctx.ResponseError(int(errors.BadRequest), "name is required")
 		return
 	}
 
@@ -334,10 +348,12 @@ Use codegen to automatically scan server code and generate registration:
 go run ./cmd/codegen ./servers
 
 # List routes without generating code
-go run ./cmd/codegen ./servers --list
+go run ./cmd/codegen -list ./servers
 ```
 
-Scans `servers/{serverType}/handler/` and `servers/{serverType}/remote/` directories, auto-registering all Handler and Remote methods.
+Scans `servers/{serverType}/handler/`, `remote/`, `filter/`, and `cron/` directories and generates `servers_gen.go`. Include the generated file in your build; it registers loader callbacks during package init, and `loader.Load()` activates them at runtime.
+
+The generated file supports multiple Handler/Remote/Filter/Cron types in the same source file.
 
 See [Handler-Guide.md](docs/Handler-Guide.md) for details.
 
@@ -352,12 +368,13 @@ See [Handler-Guide.md](docs/Handler-Guide.md) for details.
 | `WithPort(port)` | Set listen port |
 | `WithServerID(id)` | Set server ID |
 | `WithMasterAddr(addr)` | Set Master address |
-| `Configure(env, serverType)` | Configure server type |
+| `Configure(fn)` | Run a simple server configuration callback |
+| `ConfigureWithEnv(env, serverType...)` | Run a configuration callback for an environment/server type |
 | `On(route, handler)` | Register route handler |
 | `Before(filter)` | Register pre-filter |
 | `After(filter)` | Register post-filter |
-| `Start(cb)` | Start app |
-| `Stop()` | Stop app |
+| `Start()` | Start app |
+| `Stop(force)` | Stop app |
 | `Wait()` | Block waiting for signals |
 
 ### Context
@@ -365,10 +382,10 @@ See [Handler-Guide.md](docs/Handler-Guide.md) for details.
 | Method | Description |
 |--------|-------------|
 | `Session()` | Get current Session |
-| `Message()` | Get current Message |
+| `Request()` | Get current Message |
 | `Bind(v)` | Parse request data |
 | `Response(v)` | Send response |
-| `ResponseError(err)` | Send error response |
+| `ResponseError(code, msg)` | Send error response |
 | `Next()` | Call next handler |
 
 ### Session
@@ -381,9 +398,7 @@ See [Handler-Guide.md](docs/Handler-Guide.md) for details.
 | `Set(key, val)` | Store data |
 | `Get(key)` | Get data |
 | `Remove(key)` | Delete data |
-| `Push(key, val, cb)` | Push data to client |
 | `Close()` | Close session |
-| `OnClose(handler)` | Register close callback |
 
 ### Server
 
@@ -397,29 +412,33 @@ See [Handler-Guide.md](docs/Handler-Guide.md) for details.
 | `OnMessage(fn)` | Message callback |
 | `OnClose(fn)` | Close callback |
 
+Connector servers also expose protocol-specific callbacks such as `OnConnect`, `OnMessage`, and `OnClose`.
+
 ### RPC
 
 | Method | Description |
 |--------|-------------|
-| `RPC().Game()` | Get game service proxy |
-| `RPC().Gate()` | Get gate service proxy |
-| `RPC().Chat()` | Get chat service proxy |
-| `RPC().Connector()` | Get connector service proxy |
-| `RPC().Match()` | Get match service proxy |
-| `proxy.Call(method, args, reply)` | Load-balanced call (random instance) |
-| `proxy.ToServer(serverID, method, args, reply)` | Direct call to specified server |
+| `NewRPCClientManager(reg, selector, opts)` | Create an RPC client manager |
+| `app.SetRPCClientManager(mgr)` | Attach RPC manager to app |
+| `app.RPCTo(ctx, serverType, method, args, reply)` | Load-balanced RPC call by server type |
 
 Example:
 ```go
-// Load-balanced call
-app.RPC().Game().Call("OnPayment", req, &resp)
+type ChatRemote struct{}
 
-// Direct call to specific server
-app.RPC().Game().ToServer("game-1", "OnPayment", req, &resp)
+func (r *ChatRemote) Send(ctx context.Context, args struct {
+    RoomID string `json:"roomId"`
+    Text   string `json:"text"`
+}) (any, error) {
+    return map[string]any{"code": 0}, nil
+}
 
-// Notify (no response)
-app.RPC().Game().Notify("OnPayment", req)
+if err := app.RPCTo(context.Background(), "chat", "Send", req, &resp); err != nil {
+    log.Printf("rpc error: %v", err)
+}
 ```
+
+Remote methods use the contract `func(context.Context, Args) (any, error)`. JSON request arguments are converted into the declared `Args` type before invocation, and returned errors are sent back to the caller.
 
 ## Directory Structure
 

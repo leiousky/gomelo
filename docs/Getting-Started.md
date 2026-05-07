@@ -17,7 +17,7 @@ go install github.com/chuhongliang/gomelo/cmd/gomelo@latest
 ### 方式二：手动编译
 
 ```bash
-git clone https://github.com/gomelo/gomelo.git
+git clone https://github.com/chuhongliang/gomelo.git
 cd gomelo
 go build -o bin/gomelo ./cmd/gomelo
 ```
@@ -72,7 +72,9 @@ package main
 
 import (
 	"log"
-	"gomelo"
+
+	"github.com/chuhongliang/gomelo"
+	"github.com/chuhongliang/gomelo/connector"
 )
 
 func main() {
@@ -82,18 +84,17 @@ func main() {
 		gomelo.WithServerID("connector-1"),
 	)
 
-	app.Configure("connector", "connector")(func(s *gomelo.Server) {
-		s.SetFrontend(true)
-		s.SetPort(3010)
+	conn := connector.NewServer(&connector.ServerOptions{
+		Type: "tcp",
+		Host: "0.0.0.0",
+		Port: 3010,
 	})
+	app.Register("connector", conn)
 
-	// 启动时会自动注册 servers/connector/handler 下的所有 Handler
-	app.Start(func(err error) {
-		if err != nil {
-			log.Fatal(err)
-		}
-		log.Println("Server started on :3010")
-	})
+	if err := app.Start(); err != nil {
+		log.Fatal(err)
+	}
+	log.Println("Server started on :3010")
 
 	app.Wait()
 }
@@ -125,7 +126,7 @@ func (h *EntryHandler) Entry(ctx *gomelo.Context) {
 }
 ```
 
-自动生成的路由：`connector.entry.entry`
+自动生成的路由：`connector.entryHandler.entry`
 
 ### config.json
 
@@ -149,12 +150,10 @@ func (h *EntryHandler) Entry(ctx *gomelo.Context) {
 
 ## 测试
 
-使用 curl 测试服务器：
+这是 TCP/WebSocket/UDP 服务器，不是 HTTP handler。请使用 gomelo 客户端或 demo/robot 工具测试：
 
 ```bash
-curl -X POST http://localhost:3010/connector.entry \
-  -H "Content-Type: application/json" \
-  -d '{"name":"player1"}'
+go run ./client/go/demo
 ```
 
 预期响应：

@@ -17,9 +17,9 @@ Welcome to the Gomelo game server framework!
 
 #### Application (App)
 - Create app: `gomelo.NewApp()`
-- Configure server: `app.Configure(env, type)`
+- Register connector components: `app.Register(name, connector)`
 - Register route: `app.On(route, handler)`
-- Start/Stop: `app.Start()` / `app.Stop()`
+- Start/Stop: `app.Start()` / `app.Stop(false)`
 
 #### Session
 - Get current: `ctx.Session()`
@@ -35,37 +35,41 @@ Welcome to the Gomelo game server framework!
 
 #### Filter/Middleware
 ```go
-func authMiddleware(ctx *gomelo.Context) bool {
+type AuthFilter struct{}
+
+func (AuthFilter) Name() string { return "auth" }
+func (AuthFilter) Process(ctx *gomelo.Context) bool {
     if ctx.Session().Get("token") == nil {
         ctx.Response(map[string]any{"code": 401})
         return false
     }
     return true
 }
+func (AuthFilter) After(ctx *gomelo.Context) {}
 
-app.Before(authMiddleware)
+app.Before(AuthFilter{})
 ```
 
 ### Distributed
 
 #### Master Server
 ```go
-master := master.New(":3040")
-master.Start()
+data, _ := os.ReadFile("config/master.json")
+m := master.New()
+_ = m.Start(data)
 ```
 
 #### RPC Call
 ```go
 client, _ := rpc.NewClient(&rpc.ClientOptions{Host: "127.0.0.1", Port: 3020})
-client.Invoke("service", "method", &args, &reply)
+_ = client.Invoke("service", "method", args, &reply)
 ```
 
 #### Service Discovery
 ```go
-reg := registry.New()
-reg.Watch(func(event string, servers []*ServerInfo) {
-    // Listen for changes
-})
+reg := server_registry.New()
+ch := make(chan []server_registry.ServerInfo, 16)
+reg.Watch(ch)
 ```
 
 ### Production Features

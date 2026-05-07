@@ -1,423 +1,215 @@
 # Distributed Guide
 
-gomelo supports multi-node distributed deployment for large-scale game server architecture.
+gomelo supports frontend/backend separation. Frontend connector servers accept client traffic, and backend servers expose RPC services. Master can coordinate server discovery and provides an admin API.
 
-## Architecture Overview
+## Topology
 
 ```
-                        ┌─────────────┐
-                        │   Master    │  ← Service Coordination
-                        │  (port 3040) │
-                        └─────────────┘
-                               │
-    ┌──────────────────────────┼──────────────────────────┐
-    │                          │                          │
-┌───▼────┐              ┌──────▼──────┐              ┌──────▼──────┐
-│connector│              │  connector  │              │  connector  │
-│port 3010│              │  port 3011  │              │  port 3012  │  ← Frontend Layer
-└────┬────┘              └──────┬──────┘              └──────┬──────┘
-     │                           │                          │
-     └──────────────────────────┼──────────────────────────┘
-                                │ RPC
-                    ┌───────────┼───────────┐
-                    │           │           │
-              ┌─────▼─────┐┌───▼────┐┌─────▼─────┐
-              │    chat    ││  game  ││   auth    │  ← Backend Layer
-              │  port 3020 ││port3030││ port 3040 │
-              └───────────┘└────────┘└───────────┘
+clients
+  |
+  v
+connector tcp/ws/udp  --forward/RPC-->  chat/game/auth backends
+  |
+  +-- register/query --> master
 ```
 
-## Core Components
+## Configuration Files
 
-### Master Server
-
-Master coordinates all servers:
-
-```go
-master := master.New(":3040")
-master.Start()
-```
-
-### Registry
-
-Service registry for service discovery:
-
-```go
-reg := registry.New()
-```
-
-### Selector
-
-Load balancer:
-
-```go
-sel := selector.NewRandomSelector()
-// or consistent hash
-sel := selector.NewConsistentHashSelector(100, nil)
-```
-
-## Configure Multi-Server
-
-### servers.json
+`config/master.json`:
 
 ```json
 {
   "development": {
-    "connector": [
-      {"id": "connector-1", "host": "127.0.0.1", "port": 3010}
-    ],
-    "chat": [
-      {"id": "chat-1", "host": "127.0.0.1", "port": 3020}
-    ]
-  },
-  "production": {
-    "connector": [
-      {"id": "connector-1", "host": "10.0.0.1", "port": 3010},
-      {"id": "connector-2", "host": "10.0.0.2", "port": 3010}
-    ],
-    "chat": [
-      {"id": "chat-1", "host": "10.0.1.1", "port": 3020},
-      {"id": "chat-2", "host": "10.0.1.2", "port": 3020}
-    ],
-    "game": [
-      {"id": "game-1", "host": "10.0.2.1", "port": 3030}
-    ]
+    "id": "master-1",
+    "host": "127.0.0.1",
+    "port": 3005
   }
 }
 ```
 
-## Frontend Server (Connector)
+`config/servers.json`:
 
-Handles client connections:
-
-```go
-app := gomelo.NewApp(
-    gomelo.WithPort(3010),
-    gomelo.WithServerID("connector-1"),
-    gomelo.WithMasterAddr("127.0.0.1:3040"),
-)
-
-app.Configure("connector", "connector")(func(s *gomelo.Server) {
-    s.SetFrontend(true)
-    s.SetPort(3010)
-})
-
-// Register to Master
-app.On("connector.entry", handleEntry)
-
-// Forward messages to backend
-app.On("chat.send", handleForwardToChat)
+```json
+{
+  "development": [
+    {
+      "id": "connector-1",
+      "serverType": "connector",
+      "host": "127.0.0.1",
+      "port": 3010,
+      "frontend": true
+    },
+    {
+      "id": "chat-1",
+      "serverType": "chat",
+      "host": "127.0.0.1",
+      "port": 3020,
+      "frontend": false
+    }
+  ]
+}
 ```
 
-## Backend Server
+`lib.LoadServersConfig` expects each environment to be an array of server objects, not a map grouped by type.
 
-Handles business logic:
-
-```go
-app := gomelo.NewApp(
-    gomelo.WithPort(3020),
-    gomelo.WithServerID("chat-1"),
-    gomelo.WithMasterAddr("127.0.0.1:3040"),
-)
-
-app.Configure("chat", "chat")(func(s *gomelo.Server) {
-    s.SetFrontend(false)
-    s.SetPort(3020)
-})
-
-app.On("chat.send", handleChatSend)
-```
-
-## RPC Call
-
-### Create RPC Client
+## Master Server
 
 ```go
-client := rpc.NewClient(&rpc.ClientOptions{
-    Host:    "127.0.0.1",
-    Port:    3020,
-    MaxConns: 5,
-    Timeout:  5 * time.Second,
-})
-```
-
-### Use Connection Pool
-
-```go
-pool := rpc.NewClientPool("127.0.0.1:3020", 10, 1, 5*time.Second)
-client, err := pool.GetClient()
+data, err := os.ReadFile("config/master.json")
 if err != nil {
     log.Fatal(err)
 }
-defer pool.Close()
-```
 
-### Call Example
-
-```go
-var reply struct {
-    Code int `json:"code"`
-    Msg  string `json:"msg"`
+m := master.New()
+m.EnableAdmin(":3006")
+if err := m.Start(data); err != nil {
+    log.Fatal(err)
 }
-
-err := client.Invoke("chat", "Send", &req, &reply)
-if err != nil {
-    log.Printf("RPC error: %v", err)
-}
+m.Wait()
 ```
 
-### Notify (No Response Call)
+The Master query response shape is:
 
-```go
-err := client.Notify("chat", "Broadcast", map[string]any{
-    "roomId": "room-1",
-    "msg":    "hello",
-})
-```
-
-## Message Forwarding
-
-### Forwarder
-
-Message forwarder handles cross-server communication:
-
-```go
-forward := forward.NewForwarder(app, selector)
-
-func handleForward(ctx *gomelo.Context) {
-    var req struct {
-        Target string `json:"target"`
-        Route  string `json:"route"`
-        Data   any    `json:"data"`
-    }
-    ctx.Bind(&req)
-
-    // Select target server
-    servers := registry.GetServersByType(req.Target)
-    if len(servers) == 0 {
-        ctx.ResponseError(errors.New("no server available"))
-        return
-    }
-
-    server := selector.Select(servers)
-    forward.Forward(ctx.Session(), ctx.Message(), server)
+```json
+{
+  "servers": {
+    "connector": [
+      {"id":"connector-1","serverType":"connector","host":"127.0.0.1","port":3010,"frontend":true}
+    ],
+    "chat": [
+      {"id":"chat-1","serverType":"chat","host":"127.0.0.1","port":3020,"frontend":false}
+    ]
+  },
+  "count": 2
 }
 ```
 
-## Service Registry and Discovery
+`master.Client.QueryServers()` returns `map[string][]*master.ServerInfo` using the same `serverType -> servers` grouping.
 
-### Register Service
+## Frontend Connector
 
-```go
-// Connect to Master
-master := master.New("127.0.0.1:3040")
-
-// Register current server
-master.AddServer(&master.ServerInfo{
-    ID:         "connector-1",
-    ServerType: "connector",
-    Host:       "127.0.0.1",
-    Port:       3010,
-    Frontend:   true,
-})
-```
-
-### Subscribe Changes
+TCP and WebSocket connectors are App components:
 
 ```go
-registry.Watch(func(event string, servers []*registry.ServerInfo) {
-    log.Printf("Event: %s, Servers: %d", event, len(servers))
-    for _, s := range servers {
-        log.Printf("  - %s: %s:%d", s.ID, s.Host, s.Port)
-    }
-})
-```
-
-## Load Balancing Strategies
-
-### Random Selection
-
-```go
-sel := selector.NewRandomSelector()
-server := sel.Select(keys...)
-```
-
-### Round Robin
-
-```go
-sel := selector.NewRoundRobinSelector()
-server := sel.Select(keys...)
-```
-
-### Consistent Hash
-
-Suitable for stateful services, reduces data migration:
-
-```go
-sel := selector.NewConsistentHashSelector(100, nil) // 100 virtual nodes
-sel.AddServer(serverInfo1)
-sel.AddServer(serverInfo2)
-server := sel.Select(uid) // Same UID routes to same server
-```
-
-## Broadcast
-
-### Broadcast All
-
-```go
-broadcast := broadcast.NewBroadcast("announcement")
-broadcast.Broadcast("server.announcement", map[string]any{
-    "msg": "Server maintenance in 5 minutes",
-})
-```
-
-### Broadcast to Specific Users
-
-```go
-broadcast.BroadcastTo([]string{"user-1", "user-2", "user-3"}, "chat.message", map[string]any{
-    "from": "admin",
-    "msg":  "hello",
-})
-```
-
-## Complete Examples
-
-### Start Master
-
-```go
-// master/main.go
-package main
-
-import (
-    "log"
-    "gomelo/master"
+app := gomelo.NewApp(
+    gomelo.WithServerID("connector-1"),
+    gomelo.WithHost("0.0.0.0"),
+    gomelo.WithPort(3010),
 )
 
-func main() {
-    m := master.New(":3040")
-    log.Println("Master starting on :3040")
-    if err := m.Start(); err != nil {
-        log.Fatal(err)
-    }
+conn := connector.NewServer(&connector.ServerOptions{
+    Type:     "tcp",
+    Host:     "0.0.0.0",
+    Port:     3010,
+    MaxConns: 10000,
+})
+conn.OnConnect(func(s *gomelo.Session) {
+    log.Printf("connected: %d", s.ID())
+})
+app.Register("connector", conn)
+
+app.On("connector.entryHandler.entry", entry)
+
+if err := app.Start(); err != nil {
+    log.Fatal(err)
 }
+app.Wait()
 ```
 
-### Start Connector
+UDP is started directly:
 
 ```go
-// connector/main.go
-package main
-
-import (
-    "log"
-    "gomelo"
-    "gomelo/master"
-)
-
-func main() {
-    masterServer, _ := master.New("127.0.0.1:3040")
-
-    app := gomelo.NewApp(
-        gomelo.WithPort(3010),
-        gomelo.WithServerID("connector-1"),
-    )
-
-    app.Configure("connector", "connector")(func(s *gomelo.Server) {
-        s.SetFrontend(true)
-        s.SetPort(3010)
-    })
-
-    app.On("connector.entry", handleEntry)
-
-    app.Start(func(err error) {
-        if err != nil {
-            log.Fatal(err)
-        }
-        masterServer.AddServer(&master.ServerInfo{
-            ID:         "connector-1",
-            ServerType: "connector",
-            Host:       "127.0.0.1",
-            Port:       3010,
-        })
-    })
-}
+udp := connector.NewUDPServer(&connector.UDPServerOptions{
+    Type:     "udp",
+    Host:     "0.0.0.0",
+    Port:     3012,
+    MaxConns: 5000,
+})
+udp.SetApp(app)
+udp.Handle("connector.move", func(s *gomelo.Session, msg *gomelo.Message) (any, error) {
+    return map[string]any{"code": 0}, nil
+})
+go udp.Start()
+defer udp.Stop()
 ```
 
-### Start Chat Server
+TCP, WebSocket, and UDP all support Pipeline and route handlers. WebSocket accepts both raw JSON frames and length-prefixed JSON frames.
+
+## RPC Server
+
+Remote methods use this contract:
 
 ```go
-// chat/main.go
-package main
-
-import (
-    "log"
-    "gomelo"
-    "gomelo/master"
-    "gomelo/rpc"
-)
-
-func main() {
-    masterServer, _ := master.New("127.0.0.1:3040")
-
-    app := gomelo.NewApp(
-        gomelo.WithPort(3020),
-        gomelo.WithServerID("chat-1"),
-    )
-
-    app.Configure("chat", "chat")(func(s *gomelo.Server) {
-        s.SetFrontend(false)
-        s.SetPort(3020)
-    })
-
-    // Register RPC Handler
-    rpcServer := rpc.NewServer(":3030")
-    rpcServer.Register(&ChatRPC{})
-    go rpcServer.Start()
-
-    app.On("chat.send", handleChatSend)
-
-    app.Start(func(err error) {
-        if err != nil {
-            log.Fatal(err)
-        }
-        masterServer.AddServer(&master.ServerInfo{
-            ID:         "chat-1",
-            ServerType: "chat",
-            Host:       "127.0.0.1",
-            Port:       3020,
-        })
-    })
-}
-
-type ChatRPC struct{}
-
-func (s *ChatRPC) Send(ctx context.Context, args struct {
-    From string `json:"from"`
-    To   string `json:"to"`
-    Msg  string `json:"msg"`
+func (r *ChatRemote) Send(ctx context.Context, args struct {
+    RoomID string `json:"roomId"`
+    Text   string `json:"text"`
 }) (any, error) {
-    log.Printf("Chat: %s -> %s: %s", args.From, args.To, args.Msg)
     return map[string]any{"code": 0}, nil
 }
 ```
 
-## Health Check
-
-Heartbeat check automatically removes crashed servers:
+The RPC server converts JSON args into the declared argument type and returns business errors to the caller.
 
 ```go
-master.OnStateChange(func(id string, oldState, newState int) {
-    log.Printf("Server %s state changed: %d -> %d", id, oldState, newState)
-    if newState == 3 { // Timeout state
-        log.Printf("Server %s is down", id)
-    }
-})
+srv := rpc.NewServer("127.0.0.1:3020")
+if err := srv.Register("chat", &ChatRemote{}); err != nil {
+    log.Fatal(err)
+}
+if err := srv.Start(); err != nil {
+    log.Fatal(err)
+}
+defer srv.Stop()
 ```
 
-## Best Practices
+## RPC Client and Selector
 
-1. **Frontend/Backend Separation** - Connector only does connection management, business logic goes to backend
-2. **Use Connection Pool** - Avoid frequently creating RPC connections
-3. **Choose Load Balancing Properly** - Use round-robin/random for stateless, consistent hash for stateful
-4. **Monitor Server Status** - Subscribe to OnStateChange to respond to server down timely
-5. **Graceful Shutdown** - Unregister from Master before shutdown
+```go
+reg := server_registry.New()
+_ = reg.Register(server_registry.ServerInfo{
+    ID: "chat-1", ServerType: "chat", Host: "127.0.0.1", Port: 3020,
+})
+
+sel := selector.New(reg)
+mgr, err := gomelo.NewRPCClientManager(reg, sel, nil)
+if err != nil {
+    log.Fatal(err)
+}
+app.SetRPCClientManager(mgr)
+
+var reply map[string]any
+err = app.RPCTo(context.Background(), "chat", "Send", map[string]any{
+    "roomId": "lobby",
+    "text":   "hello",
+}, &reply)
+```
+
+The default selector is round-robin and keeps state across calls. Custom selectors can be registered per server type with `sel.Register(serverType, handler)`.
+
+## Forwarding
+
+Frontend connectors can forward messages whose route starts with the target server type. For route `chat.send`, the forwarder selects a `chat` server and calls RPC service `chat`, method `send`.
+
+```go
+fwd := forward.NewForwarder(app, sel)
+_ = fwd.Start()
+defer fwd.Stop()
+
+tcp.SetForwarder(fwd)
+tcp.SetForwardSelector(sel)
+```
+
+## Code Generation
+
+```bash
+go run ./cmd/codegen ./servers
+go run ./cmd/codegen -list ./servers
+```
+
+The generated `servers_gen.go` must be included in the build. It registers loader callbacks for Handler, Remote, Filter, and Cron files; `loader.Load()` invokes those callbacks while scanning the `servers/` tree.
+
+## Operational Notes
+
+- Use stable `serverType` names because route forwarding and RPC selection depend on them.
+- Set `MaxConns` on connectors to enforce admission control.
+- Register backend servers in the registry before creating the selector.
+- Run `go test ./...` after code generation and before deployment.
