@@ -78,6 +78,7 @@ func NewUDPServer(opts *UDPServerOptions) *UDPServer {
 		readPool: sync.Pool{
 			New: func() any {
 				b := make([]byte, 65535)
+				// returning &b is safe here: sync.Pool retains the value across Get/Put cycles
 				return &b
 			},
 		},

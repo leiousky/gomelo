@@ -145,10 +145,12 @@ func (f *forwarder) doForward(ctx context.Context, server server_registry.Server
 func (f *forwarder) getOrCreateClient(server server_registry.ServerInfo) (rpc.RPCClient, error) {
 	key := fmt.Sprintf("%s:%d", server.Host, server.Port)
 
+	// fast path: check sync.Map without acquiring heavy lock
 	if entry, ok := f.rpcClients.Load(key); ok {
 		return entry.(*clientEntry).client, nil
 	}
 
+	// slow path: stopMu prevents concurrent creation and blocks during Stop()
 	f.stopMu.Lock()
 	if entry, ok := f.rpcClients.Load(key); ok {
 		f.stopMu.Unlock()

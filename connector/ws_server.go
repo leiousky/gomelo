@@ -21,14 +21,6 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
-	CheckOrigin: func(r *http.Request) bool {
-		return true
-	},
-}
-
 type wsSessionData struct {
 	heart   time.Time
 	conn    *websocket.Conn
@@ -60,6 +52,7 @@ type WebSocketServer struct {
 	sessions    map[uint64]*wsSessionData
 	heartMu     sync.RWMutex
 	schemaMgr   *schema.Manager
+	upgrader    websocket.Upgrader
 }
 
 type WebSocketOptions struct {
@@ -100,6 +93,13 @@ func NewWebSocketServer(opts *WebSocketOptions) *WebSocketServer {
 		},
 		sessions:  make(map[uint64]*wsSessionData),
 		schemaMgr: schema.NewManager(opts.Type, opts.Type),
+		upgrader: websocket.Upgrader{
+			ReadBufferSize:  1024,
+			WriteBufferSize: 1024,
+			CheckOrigin: func(r *http.Request) bool {
+				return true
+			},
+		},
 	}
 }
 
@@ -159,7 +159,7 @@ func (s *WebSocketServer) Start(app *lib.App) error {
 	s.app = app
 
 	if s.opts.CheckOrigin != nil {
-		upgrader.CheckOrigin = func(r *http.Request) bool {
+		s.upgrader.CheckOrigin = func(r *http.Request) bool {
 			return s.opts.CheckOrigin(r.Header.Get("Origin"))
 		}
 	}
@@ -212,7 +212,7 @@ func (s *WebSocketServer) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		// For wss, TLS should be handled by a reverse proxy or cert files
 	}
 
-	conn, err := upgrader.Upgrade(w, r, nil)
+	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("WebSocket upgrade failed: %v", err)
 		return

@@ -1,6 +1,52 @@
 # 更新日志
 
 本文档记录 gomelo 的所有重要变更。
+## [1.5.5] - 2026-05-13
+
+### 修复
+
+#### 关键并发与安全修复 (P0)
+- **connector/ws_server.go** - 移除全局 `upgrader` 变量，改为每个 WebSocketServer 实例持有独立 upgrader，消除多实例竞态
+- **pool/pool.go** - 删除 `Get()` 错误路径上的 `atomic.AddInt64(&p.totalConns, -1)`，修复 totalConns 负数问题
+- **connector/tcp_server.go** - msgCh 满时改为丢弃消息并告警，而非直接关闭连接踢人
+- **connector/tcp_server.go** - dispatchMessages 缓冲区溢出时断开连接而非静默截断，防止内存无限增长
+- **lib/message.go** - `DecodeBody()` 撤销硬编码 JSON 反序列化，改为委托 `defaultCodec.DecodeBody()`，支持 Protobuf 等自定义 codec；同时保留非 []byte Body 的 fallback 处理，防止 panic
+- **lib/message.go** - 修复 `m.Body.([]byte)` 直接类型断言导致的 panic 风险，添加 ok 检查 + JSON fallback
+- **lib/event.go** - `Emit()` 改进：用 RLock 复制 handlers 列表，再用 Lock 清理 once handlers，减少持写锁时间；移除重复空检查
+
+#### 高优先级修复 (P1)
+- **rpc/server.go** - `running` 从 `bool` 改为 `atomic.Bool`，添加 `sync/atomic` import
+- **rpc/client.go** - 重构 `poolClient.GetClient()`，消除 `goto` 跳转，改为顺序控制流 + 注释说明
+- **broadcast/broadcast.go** - `pushToSession()` 添加 panic recover，防止单条推送崩溃导致整个 worker 静默退出
+- **connector/tcp_server.go** - `running` 从 `bool` 改为 `atomic.Bool`
+- **scheduler/scheduler.go** - `Push()` 的 `recover()` 增加 `log.Printf` 输出 panic 信息，添加 `log` import
+- **connector/tcp_server.go** - dispatchMessages 和 readLoop 日志修复：connID 不在作用域，用 session.ID() 替代
+
+#### 中优先级修复 (P2)
+- **pool/pool.go** - `RPCClientPool.Stats()` 返回实际 `totalConns` 而非 `maxConns`
+- **forward/forward.go** - `getOrCreateClient()` 添加注释说明双重检查锁定设计
+- **lib/ratelimit.go** - `ConnectionLimiter.Acquire()` CAS 失败时添加重试循环（最多3次），降低竞态误判
+- **lib/tracing.go** - `NewTraceID()` 低 64 位改用单调计数器替代零值，降低碰撞概率
+- **errors/errors.go** - `WithDetail()`/`WithErr()` 改为返回新对象而非修改接收者，防止副作用
+- **filter/filter.go** - `FilterFunc.Name()` 返回 `func-filter[<ptr>]` 唯一标识，支持精确 Remove
+- **connector/udp_server.go** - readPool `New()` 添加注释说明返回 `&b` 在 sync.Pool 场景下是安全的
+
+#### CLI 模板与启动逻辑修复
+- **cmd/gomelo/main.go** - `goModTemplate` 移除硬编码 `D:/workspace/gomelo` replace 指令，改为注释提示用户自行配置
+- **cmd/gomelo/main.go** - `adminTemplate` 添加缺失的 `encoding/binary` 和 `io` import
+- **cmd/gomelo/main.go** - `connectorRemoteTemplate` args 结构体添加 `json:"userId"` tag
+- **cmd/gomelo/main.go** - `cronTemplate` `Cleanup()` 方法移除 `error` 返回值，匹配 Cron 接口规范
+- **cmd/gomelo/main.go** - `connectorHandlerTemplate` `Logout` 中 `ResponseOK(nil)` 改为 `ResponseOK(map[string]any{})`
+- **cmd/gomelo/main.go** - `filterTemplate` `Name()` 从固定字符串改为 `"%s-filter"` 格式
+- **cmd/gomelo/main.go** - `handleInit` 自动生成 `.gitignore` 文件，生成后自动执行 `go mod tidy`
+- **cmd/gomelo/main.go** - `handleStart` 增加 `--server-type` 参数支持，增加 `--dev` 模式，默认使用编译产物而非 `go run`
+- **cmd/gomelo/main.go** - `handleStart` 修复参数解析 bug：多个非选项参数相互覆盖
+- **cmd/gomelo/main.go** - 统一 admin 端口为 `:3006`，消除模板/CLI 间端口不一致
+- **cmd/gomelo/main.go** - `gomelo list` 默认端口从 3005 改为 3006（HTTP admin 端口），CLI `serverInfo` 结构体与 Master 返回对齐
+- **cmd/gomelo/main.go** - `mainGoTemplate` 的 `startGameServer()` 修复 `s.Frontend()` 永远为 false 的 bug，改为 `app.IsFrontend()`
+- **cmd/gomelo/main.go** - `mainGoTemplate` 的 `startGameServer()` 添加 Master 客户端注册逻辑（Register + 心跳），修复子服务器不在 `gomelo list` 中出现的问题
+- **cmd/gomelo/main.go** - `mainGoTemplate` 添加 `"time"` import
+- **cmd/gomelo/main.go** - `masterMainTemplate` 和 `autoSelectServerID` 添加用途说明注释
 
 ## [1.5.4] - 2026-04-28
 

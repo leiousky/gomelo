@@ -15,11 +15,14 @@ func (t TraceID) String() string {
 	return fmt.Sprintf("%032x", t[:])
 }
 
+var traceIDSeq atomic.Uint64
+
 func NewTraceID() TraceID {
 	var t TraceID
-	now := time.Now().UnixNano()
-	binary.LittleEndian.PutUint64(t[:8], uint64(now))
-	binary.LittleEndian.PutUint64(t[8:16], uint64(now>>64))
+	now := uint64(time.Now().UnixNano())
+	seq := traceIDSeq.Add(1)
+	binary.LittleEndian.PutUint64(t[:8], now)
+	binary.LittleEndian.PutUint64(t[8:16], seq)
 	return t
 }
 

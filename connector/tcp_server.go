@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -41,7 +42,7 @@ type Server struct {
 	onConnect   ConnectHandler
 	onMessage   MessageHandler
 	onClose     CloseHandler
-	running     bool
+	running     atomic.Bool
 	connections int64
 	maxConns    int
 	connID      uint64
@@ -152,7 +153,7 @@ func (s *Server) updateSessionHeart(connID uint64) {
 
 func (s *Server) Start(app *lib.App) error {
 	s.app = app
-	s.running = true
+	s.running.Store(true)
 	addr := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.Port)
 	var err error
 
@@ -187,7 +188,7 @@ func (s *Server) Start(app *lib.App) error {
 }
 
 func (s *Server) Stop() error {
-	s.running = false
+	s.running.Store(false)
 	s.stopOnce.Do(func() {
 		close(s.stopCh)
 	})
@@ -288,10 +289,10 @@ func (s *Server) readLoop(conn net.Conn, sconn lib.Connection, session *lib.Sess
 		s.readPool.Put(buf)
 
 		if len(readBuf) > maxReadBufSize {
-			readBuf = readBuf[:cap(readBuf)]
-			if len(readBuf) > maxReadBufSize {
-				readBuf = readBuf[len(readBuf)/2:]
-			}
+			// buffer overflow: close connection to prevent memory exhaustion
+			log.Printf("tcp readLoop: readBuf exceeded max size (%d bytes), closing session=%d", len(readBuf), session.ID())
+			s.readPool.Put(buf)
+			return
 		}
 
 		s.dispatchMessages(session, &readBuf, msgCh)
@@ -321,7 +322,8 @@ func (s *Server) dispatchMessages(session *lib.Session, buf *[]byte, msgCh chan 
 		select {
 		case msgCh <- &msg:
 		default:
-			session.Close()
+			// drop message when channel is full instead of closing the session
+			log.Printf("tcp dispatchMessages: msgCh full for session=%d, dropping message", session.ID())
 		}
 	}
 }

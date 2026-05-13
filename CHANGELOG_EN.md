@@ -2,6 +2,53 @@
 
 All notable changes to gomelo will be documented in this file.
 
+## [1.5.5] - 2026-05-13
+
+### Fixed
+
+#### Critical Concurrency & Safety Fixes (P0)
+- **connector/ws_server.go** - Removed global `upgrader` variable; each WebSocketServer instance now holds its own upgrader, eliminating multi-instance race conditions
+- **pool/pool.go** - Removed `atomic.AddInt64(&p.totalConns, -1)` on error path in `Get()`, fixing negative totalConns bug
+- **connector/tcp_server.go** - When msgCh is full, drop message and log warning instead of closing the connection and kicking the client
+- **connector/tcp_server.go** - On buffer overflow in dispatchMessages, disconnect client instead of silently truncating, preventing unbounded memory growth
+- **lib/message.go** - `DecodeBody()` delegates to `defaultCodec.DecodeBody()` instead of hardcoded JSON, supporting Protobuf and other custom codecs; retains fallback for non-`[]byte` Body to prevent panic
+- **lib/message.go** - Fixed `m.Body.([]byte)` type assertion panic risk by adding ok check + JSON fallback
+- **lib/event.go** - Improved `Emit()`: copy handlers under RLock, clean once handlers under Lock, reducing write-lock hold time; removed duplicate empty check
+
+#### High Priority Fixes (P1)
+- **rpc/server.go** - Changed `running` from `bool` to `atomic.Bool`, added `sync/atomic` import
+- **rpc/client.go** - Refactored `poolClient.GetClient()` to eliminate `goto`, replaced with sequential control flow + comments
+- **broadcast/broadcast.go** - Added panic recovery in `pushToSession()`, preventing single push crash from silently killing the entire worker
+- **connector/tcp_server.go** - Changed `running` from `bool` to `atomic.Bool`
+- **scheduler/scheduler.go** - `Push()` recover now logs panic info via `log.Printf`, added `log` import
+- **connector/tcp_server.go** - Fixed dispatchMessages and readLoop logging: replaced out-of-scope connID with session.ID()
+
+#### Medium Priority Fixes (P2)
+- **pool/pool.go** - `RPCClientPool.Stats()` returns actual `totalConns` instead of `maxConns`
+- **forward/forward.go** - Added comments explaining double-checked locking design in `getOrCreateClient()`
+- **lib/ratelimit.go** - `ConnectionLimiter.Acquire()` CAS retry loop (up to 3 retries), reducing false rejections under contention
+- **lib/tracing.go** - `NewTraceID()` lower 64 bits now use monotonic counter instead of zero, reducing collision probability
+- **errors/errors.go** - `WithDetail()`/`WithErr()` return new objects instead of mutating the receiver, preventing side effects
+- **filter/filter.go** - `FilterFunc.Name()` returns `func-filter[<ptr>]` unique identifier, enabling precise Remove
+- **connector/udp_server.go** - Added comment explaining `&b` return in readPool `New()` is safe under sync.Pool semantics
+
+#### CLI Templates & Startup Logic Fixes
+- **cmd/gomelo/main.go** - Removed hardcoded `D:/workspace/gomelo` replace directive from `goModTemplate`, replaced with comment guiding local setup
+- **cmd/gomelo/main.go** - Added missing `encoding/binary` and `io` imports to `adminTemplate`
+- **cmd/gomelo/main.go** - Added `json:"userId"` tag to args struct in `connectorRemoteTemplate`
+- **cmd/gomelo/main.go** - Removed `error` return from `cronTemplate` `Cleanup()`, matching Cron interface spec
+- **cmd/gomelo/main.go** - Changed `ResponseOK(nil)` to `ResponseOK(map[string]any{})` in `connectorHandlerTemplate` `Logout`
+- **cmd/gomelo/main.go** - Changed `filterTemplate` `Name()` from fixed string to `"%s-filter"` format
+- **cmd/gomelo/main.go** - `handleInit` now auto-generates `.gitignore` and runs `go mod tidy` after generation
+- **cmd/gomelo/main.go** - `handleStart` added `--server-type` flag support, `--dev` mode; defaults to compiled binary instead of `go run`
+- **cmd/gomelo/main.go** - Fixed `handleStart` argument parsing bug: multiple non-flag arguments overwrote each other
+- **cmd/gomelo/main.go** - Unified admin port to `:3006` across templates and CLI, eliminating port mismatch
+- **cmd/gomelo/main.go** - `gomelo list` default port changed from 3005 to 3006 (HTTP admin port); CLI `serverInfo` struct aligned with Master response fields
+- **cmd/gomelo/main.go** - Fixed `s.Frontend()` always returning false bug in `mainGoTemplate` `startGameServer()`; replaced with `app.IsFrontend()`
+- **cmd/gomelo/main.go** - Added Master client registration logic (Register + heartbeat) to `mainGoTemplate` `startGameServer()`, fixing child servers not appearing in `gomelo list`
+- **cmd/gomelo/main.go** - Added `"time"` import to `mainGoTemplate`
+- **cmd/gomelo/main.go** - Added usage comments to `masterMainTemplate` and `autoSelectServerID`
+
 ## [1.5.4] - 2026-04-28
 
 ### Fixed

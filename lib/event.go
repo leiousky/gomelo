@@ -56,10 +56,16 @@ func (e *EventEmitter) Off(event string, id EventID) {
 }
 
 func (e *EventEmitter) Emit(event string, args ...any) {
-	e.mu.Lock()
+	e.mu.RLock()
 	handlers := make([]*eventHandler, len(e.events[event]))
 	copy(handlers, e.events[event])
+	e.mu.RUnlock()
 
+	if len(handlers) == 0 {
+		return
+	}
+
+	e.mu.Lock()
 	var keep []*eventHandler
 	for _, h := range handlers {
 		if !h.once {
@@ -68,10 +74,6 @@ func (e *EventEmitter) Emit(event string, args ...any) {
 	}
 	e.events[event] = keep
 	e.mu.Unlock()
-
-	if len(handlers) == 0 {
-		return
-	}
 
 	var wg sync.WaitGroup
 	wg.Add(len(handlers))

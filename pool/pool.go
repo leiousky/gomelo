@@ -388,7 +388,6 @@ func (p *RPCClientPool) Get() (*RPCConn, error) {
 		return nil, ErrPoolClosed
 	}
 	if err != nil {
-		atomic.AddInt64(&p.totalConns, -1)
 		return nil, err
 	}
 
@@ -454,7 +453,8 @@ func (p *RPCClientPool) Close() {
 
 func (p *RPCClientPool) Stats() (total, idle, active int) {
 	l := len(p.pool.conns)
-	return p.maxConns, l, p.maxConns - l
+	t := atomic.LoadInt64(&p.totalConns)
+	return int(t), l, int(t) - l
 }
 
 type WorkerPool struct {
