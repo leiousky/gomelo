@@ -189,6 +189,13 @@ func (b *broadcastService) doBroadcastByIDs(sids []uint64, route string, msg any
 }
 
 func (b *broadcastService) pushToSession(s *lib.Session, route string, msg any) {
+	defer func() {
+		if r := recover(); r != nil {
+			atomic.AddInt64(&b.stats.failedPush, 1)
+			log.Printf("broadcast pushToSession panic: %v", r)
+		}
+	}()
+
 	if s.IsClosed() {
 		atomic.AddInt64(&b.stats.failedPush, 1)
 		return

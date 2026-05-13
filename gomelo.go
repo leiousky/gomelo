@@ -24,7 +24,7 @@ import (
 	"github.com/chuhongliang/gomelo/server_registry"
 )
 
-var Version = "1.5.4"
+const Version = "1.5.4"
 
 type (
 	Component       = lib.Component

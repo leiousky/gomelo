@@ -83,13 +83,21 @@ func (e *GomeloError) Unwrap() error {
 }
 
 func (e *GomeloError) WithDetail(detail string) *GomeloError {
-	e.Detail = detail
-	return e
+	return &GomeloError{
+		Code:    e.Code,
+		Message: e.Message,
+		Detail:  detail,
+		Err:     e.Err,
+	}
 }
 
 func (e *GomeloError) WithErr(err error) *GomeloError {
-	e.Err = err
-	return e
+	return &GomeloError{
+		Code:    e.Code,
+		Message: e.Message,
+		Detail:  e.Detail,
+		Err:     err,
+	}
 }
 
 func (e *GomeloError) ToMap() map[string]interface{} {

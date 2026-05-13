@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -39,7 +40,7 @@ type rpcServer struct {
 	cancel    context.CancelFunc
 	stopCh    chan struct{}
 	wg        sync.WaitGroup
-	running   bool
+	running   atomic.Bool
 	timeout   time.Duration
 	semaphore chan struct{}
 }
@@ -111,7 +112,7 @@ func (s *rpcServer) Register(service string, impl any) error {
 }
 
 func (s *rpcServer) Start() error {
-	if s.running {
+	if s.running.Load() {
 		return nil
 	}
 
@@ -123,7 +124,7 @@ func (s *rpcServer) Start() error {
 	s.listener = ln
 
 	s.mu.Lock()
-	s.running = true
+	s.running.Store(true)
 	s.mu.Unlock()
 
 	s.wg.Add(1)
@@ -141,7 +142,7 @@ func (s *rpcServer) acceptLoop() {
 		conn, err := s.listener.Accept()
 		if err != nil {
 			s.mu.RLock()
-			running := s.running
+			running := s.running.Load()
 			s.mu.RUnlock()
 			if !running {
 				return
@@ -365,11 +366,11 @@ func (s *rpcServer) sendResponse(conn net.Conn, seq uint64, resp rpcResponse) er
 }
 
 func (s *rpcServer) Stop() {
-	if !s.running {
+	if !s.running.Load() {
 		return
 	}
 
-	s.running = false
+	s.running.Store(false)
 	s.cancel()
 	close(s.stopCh)
 

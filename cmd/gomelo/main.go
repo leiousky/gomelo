@@ -65,7 +65,7 @@ func handleRoutes(args []string) {
 }
 
 func handleList(args []string) {
-	masterAddr := "127.0.0.1:3005"
+	masterAddr := "127.0.0.1:3006"
 	for i, arg := range args {
 		if arg == "--master" && i+1 < len(args) {
 			masterAddr = args[i+1]
@@ -103,14 +103,14 @@ type serverListResp struct {
 }
 
 type serverInfo struct {
-	ID      string `json:"id"`
-	Type    string `json:"type"`
-	State   string `json:"state"`
-	Clients int    `json:"clients"`
-	Memory  int64  `json:"memory"`
-	Uptime  int64  `json:"uptime"`
-	Host    string `json:"host"`
-	Port    int    `json:"port"`
+	ID         string `json:"id"`
+	ServerType string `json:"serverType"`
+	State      int    `json:"state"`
+	Count      int    `json:"count"`
+	Host       string `json:"host"`
+	Port       int    `json:"port"`
+	Frontend   bool   `json:"frontend"`
+	RegisterAt int64  `json:"registerAt"`
 }
 
 func fetchServers(masterAddr string) (*serverListResp, error) {
@@ -148,16 +148,18 @@ func printServerTable(servers []serverInfo) {
 	}
 
 	fmt.Println()
-	fmt.Printf("%-15s %-10s %-20s %-8s %-10s %-10s\n",
-		"SERVER ID", "TYPE", "HOST:PORT", "CLIENTS", "MEMORY", "UPTIME")
-	fmt.Println(strings.Repeat("-", 78))
+	fmt.Printf("%-18s %-12s %-22s %-8s %-8s\n",
+		"SERVER ID", "TYPE", "HOST:PORT", "CLIENTS", "STATE")
+	fmt.Println(strings.Repeat("-", 72))
 
 	for _, s := range servers {
 		addr := fmt.Sprintf("%s:%d", s.Host, s.Port)
-		memory := formatMemory(s.Memory)
-		uptime := formatUptime(s.Uptime)
-		fmt.Printf("%-15s %-10s %-20s %-8d %-10s %-10s\n",
-			s.ID, s.Type, addr, s.Clients, memory, uptime)
+		stateStr := "offline"
+		if s.State == 0 {
+			stateStr = "online"
+		}
+		fmt.Printf("%-18s %-12s %-22s %-8d %-8s\n",
+			s.ID, s.ServerType, addr, s.Count, stateStr)
 	}
 	fmt.Println()
 }
@@ -205,7 +207,9 @@ Commands:
 
 Start Options:
   --dir <path>         Specify server directory (default: current directory)
+  --server-type <type> Set GOMELO_SERVER_TYPE (default: master)
   --production         Start with production environment
+  --dev                Use go run instead of compiled binary
 
 Examples:
   gomelo init
@@ -249,7 +253,8 @@ func handleInit(args []string) {
 		"web-server/public/index.html":   webIndexTemplate,
 		"web-server/public/js/client.js": webClientTemplate,
 
-		"game-server/logs/.gitkeep":       "",
+		"game-server/logs/.gitkeep": "",
+		".gitignore":                gitignoreTemplate,
 	}
 
 	for filename, content := range files {
@@ -270,6 +275,17 @@ func handleInit(args []string) {
 
 	fmt.Printf("Project '%s' created successfully!\n\n", name)
 	printDirStructure()
+
+	// Run go mod tidy to resolve dependencies
+	gameDir := filepath.Join(dir, "game-server")
+	fmt.Printf("Resolving dependencies (go mod tidy)...\n")
+	tidyCmd := exec.Command("go", "mod", "tidy")
+	tidyCmd.Dir = gameDir
+	tidyCmd.Stdout = os.Stdout
+	tidyCmd.Stderr = os.Stderr
+	if err := tidyCmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: go mod tidy failed (you may need to run it manually): %v\n", err)
+	}
 }
 
 func printDirStructure() {
@@ -345,16 +361,27 @@ func handleBuild(args []string) {
 func handleStart(args []string) {
 	dir := "."
 	var env string
+	var serverType string
+	devMode := false
+	dirSet := false
 
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if arg == "--dir" && i+1 < len(args) {
+		switch {
+		case arg == "--dir" && i+1 < len(args):
 			dir = args[i+1]
+			dirSet = true
 			i++
-		} else if arg == "--production" {
+		case arg == "--server-type" && i+1 < len(args):
+			serverType = args[i+1]
+			i++
+		case arg == "--production":
 			env = "production"
-		} else if !strings.HasPrefix(arg, "-") {
+		case arg == "--dev":
+			devMode = true
+		case !strings.HasPrefix(arg, "-") && !dirSet:
 			dir = arg
+			dirSet = true
 		}
 	}
 
@@ -368,8 +395,6 @@ func handleStart(args []string) {
 	}
 
 	serverDir := filepath.Dir(mainPath)
-
-	fmt.Printf("Starting gomelo from %s...\n", serverDir)
 
 	fmt.Printf("Ensuring dependencies...\n")
 	tidyCmd := exec.Command("go", "mod", "tidy")
@@ -385,21 +410,60 @@ func handleStart(args []string) {
 	if env != "" {
 		cmdEnv = append(cmdEnv, "GOMELO_ENV="+env)
 	}
-	cmdEnv = append(cmdEnv, "GOMELO_SERVER_TYPE=master")
+	if serverType != "" {
+		cmdEnv = append(cmdEnv, "GOMELO_SERVER_TYPE="+serverType)
+	} else {
+		cmdEnv = append(cmdEnv, "GOMELO_SERVER_TYPE=master")
+	}
 
-	cmd := exec.Command("go", "run", ".")
-	cmd.Dir = serverDir
-	cmd.Env = cmdEnv
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
+	if devMode {
+		fmt.Printf("Starting gomelo (dev mode) from %s...\n", serverDir)
+		cmd := exec.Command("go", "run", ".")
+		cmd.Dir = serverDir
+		cmd.Env = cmdEnv
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Stdin = os.Stdin
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error starting gomelo: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 
-	if err := cmd.Run(); err != nil {
+	binaryName := "server"
+	if runtime.GOOS == "windows" {
+		binaryName += ".exe"
+	}
+	binaryPath := filepath.Join(serverDir, binaryName)
+
+	if _, err := os.Stat(binaryPath); os.IsNotExist(err) {
+		fmt.Printf("Binary not found, building...\n")
+		buildCmd := exec.Command("go", "build", "-o", binaryName, ".")
+		buildCmd.Dir = serverDir
+		buildCmd.Stdout = os.Stdout
+		buildCmd.Stderr = os.Stderr
+		if err := buildCmd.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error building server (use --dev for go run): %v\n", err)
+			os.Exit(1)
+		}
+	}
+
+	fmt.Printf("Starting gomelo from %s...\n", serverDir)
+	runCmd := exec.Command(binaryPath)
+	runCmd.Dir = serverDir
+	runCmd.Env = cmdEnv
+	runCmd.Stdout = os.Stdout
+	runCmd.Stderr = os.Stderr
+	runCmd.Stdin = os.Stdin
+	if err := runCmd.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error starting gomelo: %v\n", err)
 		os.Exit(1)
 	}
 }
 
+// autoSelectServerID reads servers.json and returns the first server ID for the given type.
+// Currently unused; kept for potential use by external tooling.
 func autoSelectServerID(configPath, serverType, env string) (string, error) {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -443,6 +507,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/chuhongliang/gomelo/connector"
 	"github.com/chuhongliang/gomelo/lib"
@@ -554,15 +619,46 @@ func startGameServer() {
 
 	app.Setup("./config")
 
-	app.Configure(func(s *lib.Server) {
-		if s.Frontend() {
-			conn := connector.NewServer(&connector.ServerOptions{
-				Host: s.Host(),
-				Port: s.Port(),
-			})
-			app.Register("connector", conn)
+	// Register with Master if master address is configured (set by Master auto-start)
+	masterAddr := os.Getenv("GOMELO_MASTER_HOST")
+	if masterAddr != "" {
+		serverID := app.GetServerId()
+		serverType := app.GetServerType()
+		host := app.GetHost()
+		port := app.GetPort()
+		frontend := app.IsFrontend()
+
+		mc, err := master.NewClientWithConfig(masterAddr, serverID, serverType, host, port, frontend)
+		if err != nil {
+			fmt.Printf("Connect to master failed: %v\n", err)
+		} else {
+			if err := mc.Register(); err != nil {
+				fmt.Printf("Register with master failed: %v\n", err)
+			} else {
+				fmt.Printf("Registered with master at %s\n", masterAddr)
+				go func() {
+					ticker := time.NewTicker(30 * time.Second)
+					defer ticker.Stop()
+					for range ticker.C {
+						if err := mc.Heartbeat(); err != nil {
+							fmt.Printf("Heartbeat failed: %v\n", err)
+							return
+						}
+					}
+				}()
+				defer mc.Unregister()
+				defer mc.Close()
+			}
 		}
-	})
+	}
+
+	if app.IsFrontend() {
+		conn := connector.NewServer(&connector.ServerOptions{
+			Host: app.GetHost(),
+			Port: app.GetPort(),
+		})
+		app.Register("connector", conn)
+	}
 
 	l := loader.NewLoader("servers")
 	l.SetApp(app)
@@ -590,7 +686,8 @@ go 1.21
 
 require github.com/chuhongliang/gomelo v1.5.4
 
-replace github.com/chuhongliang/gomelo => D:/workspace/gomelo
+// If you are developing gomelo locally, uncomment and adjust the path:
+// replace github.com/chuhongliang/gomelo => /your/local/gomelo/path
 `, name)
 }
 
@@ -604,6 +701,29 @@ var serversJsonTemplate = `{
     {"id": "gate-1", "serverType": "gate", "host": "127.0.0.1", "port": 3011}
   ]
 }
+`
+
+var gitignoreTemplate = `# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+server
+server.exe
+
+# Logs
+logs/
+*.log
+
+# Go
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
 `
 
 var logConfigTemplate = `{
@@ -633,6 +753,8 @@ var masterConfigTemplate = `{
 }
 `
 
+// masterMainTemplate is an alternative standalone master entrypoint (not used by handleInit).
+// The mainGoTemplate includes master startup logic within a single main.go via GOMELO_SERVER_TYPE.
 var masterMainTemplate = `package main
 
 import (
@@ -732,7 +854,7 @@ func main() {
 }
 `
 
-var connectorHandlerTemplate = "package handler\n\nimport (\n\t\"github.com/chuhongliang/gomelo/lib\"\n)\n\ntype EntryHandler struct {\n\tapp *lib.App\n}\n\nfunc (h *EntryHandler) Init(app *lib.App) { h.app = app }\n\nfunc (h *EntryHandler) Entry(ctx *lib.Context) {\n\tvar req struct {\n\t\tName string `json:\"name\"`\n\t}\n\tctx.Bind(&req)\n\tctx.Response(map[string]any{\"msg\": \"hello \" + req.Name})\n}\n\nfunc (h *EntryHandler) GetFriends(ctx *lib.Context) {\n\tctx.ResponseOK(map[string]any{\"friends\": []string{}})\n}\n\nfunc (h *EntryHandler) Logout(ctx *lib.Context) {\n\tctx.ResponseOK(nil)\n}\n"
+var connectorHandlerTemplate = "package handler\n\nimport (\n\t\"github.com/chuhongliang/gomelo/lib\"\n)\n\ntype EntryHandler struct {\n\tapp *lib.App\n}\n\nfunc (h *EntryHandler) Init(app *lib.App) { h.app = app }\n\nfunc (h *EntryHandler) Entry(ctx *lib.Context) {\n\tvar req struct {\n\t\tName string `json:\"name\"`\n\t}\n\tctx.Bind(&req)\n\tctx.Response(map[string]any{\"msg\": \"hello \" + req.Name})\n}\n\nfunc (h *EntryHandler) GetFriends(ctx *lib.Context) {\n\tctx.ResponseOK(map[string]any{\"friends\": []string{}})\n}\n\nfunc (h *EntryHandler) Logout(ctx *lib.Context) {\n\tctx.ResponseOK(map[string]any{})\n}\n"
 
 var connectorRemoteTemplate = `package remote
 
@@ -775,7 +897,7 @@ type %sCron struct {
 
 func (c *%sCron) Init(app *lib.App) { c.app = app }
 
-func (c *%sCron) Cleanup(ctx context.Context) error {
+func (c *%sCron) Cleanup(ctx context.Context) {
 	return nil
 }
 `, title, title, title)
@@ -792,7 +914,7 @@ import (
 
 type %sFilter struct{}
 
-func (f *%sFilter) Name() string { return "%s" }
+func (f *%sFilter) Name() string { return "%s-filter" }
 
 func (f *%sFilter) Process(ctx *lib.Context) bool {
 	ctx.Set("startTime", time.Now())
@@ -911,7 +1033,7 @@ window.gomeloAdmin = { AdminClient: AdminClient };
 
 func adminTemplate() string {
 	qt := "\""
-	return "package main\n\nimport (\n\t\"encoding/json\"\n\t\"flag\"\n\t\"fmt\"\n\t\"net\"\n\t\"net/http\"\n\t\"sync\"\n\t\"time\"\n)\n\nvar httpAddr = flag.String(\"http\", \":3006\", \"HTTP listen address\")\nvar masterAddr = flag.String(\"master\", \"127.0.0.1:3005\", \"Master server address\")\n\ntype AdminServer struct {\n\tmasterAddr string\n\tservers    map[string]*ServerStat\n\tmu         sync.RWMutex\n\tmux        *http.ServeMux\n\tserver     *http.Server\n}\n\ntype ServerStat struct {\n\tID      string " + qt + "json:\"id\"" + qt + "\n\tType    string " + qt + "json:\"type\"" + qt + "\n\tState   string " + qt + "json:\"state\"" + qt + "\n\tClients int    " + qt + "json:\"clients\"" + qt + "\n\tHost    string " + qt + "json:\"host\"" + qt + "\n\tPort    int    " + qt + "json:\"port\"" + qt + "\n}\n\ntype masterMessage struct {\n\tType string          " + qt + "json:\"type\"" + qt + "\n\tData json.RawMessage " + qt + "json:\"data\"" + qt + "\n}\n\ntype serverInfo struct {\n\tID         string " + qt + "json:\"id\"" + qt + "\n\tServerType string " + qt + "json:\"serverType\"" + qt + "\n\tHost       string " + qt + "json:\"host\"" + qt + "\n\tPort       int    " + qt + "json:\"port\"" + qt + "\n\tFrontend   bool   " + qt + "json:\"frontend\"" + qt + "\n\tState      int    " + qt + "json:\"state\"" + qt + "\n\tCount      int    " + qt + "json:\"count\"" + qt + "\n}\n\nfunc main() {\n\tflag.Parse()\n\n\tadmin := &AdminServer{\n\t\tmasterAddr: *masterAddr,\n\t\tservers:    make(map[string]*ServerStat),\n\t}\n\n\tadmin.mux = http.NewServeMux()\n\tadmin.mux.HandleFunc(\"/api/servers\", admin.listServers)\n\tadmin.mux.HandleFunc(\"/api/stats\", admin.getStats)\n\tadmin.mux.HandleFunc(\"/api/connections\", admin.getConnections)\n\tadmin.mux.HandleFunc(\"/\", admin.index)\n\n\tadmin.server = &http.Server{\n\t\tAddr:    *httpAddr,\n\t\tHandler: admin.mux,\n\t}\n\n\tgo admin.watchMaster()\n\n\tfmt.Printf(\"Admin server starting on %s\\n\", *httpAddr)\n\tadmin.server.ListenAndServe()\n}\n\nfunc (a *AdminServer) watchMaster() {\n\tticker := time.NewTicker(5 * time.Second)\n\tdefer ticker.Stop()\n\n\tfor range ticker.C {\n\t\tservers, err := a.queryMasterServers()\n\t\tif err != nil {\n\t\t\tcontinue\n\t\t}\n\n\t\ta.mu.Lock()\n\t\ta.servers = make(map[string]*ServerStat)\n\t\tfor _, s := range servers {\n\t\t\ta.servers[s.ID] = &ServerStat{\n\t\t\t\tID:      s.ID,\n\t\t\t\tType:    s.ServerType,\n\t\t\t\tState:   \"online\",\n\t\t\t\tClients: s.Count,\n\t\t\t\tHost:    s.Host,\n\t\t\t\tPort:    s.Port,\n\t\t\t}\n\t\t}\n\t\ta.mu.Unlock()\n\t}\n}\n\nfunc (a *AdminServer) queryMasterServers() ([]serverInfo, error) {\n\tconn, err := net.DialTimeout(\"tcp\", a.masterAddr, 5*time.Second)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tdefer conn.Close()\n\n\treq := masterMessage{Type: \"query\"}\n\tdata, _ := json.Marshal(req)\n\tlenBuf := make([]byte, 4)\n\tbinary.BigEndian.PutUint32(lenBuf, uint32(len(data)))\n\tconn.Write(lenBuf)\n\tconn.Write(data)\n\n\theader := make([]byte, 4)\n\tconn.SetReadDeadline(time.Now().Add(10 * time.Second))\n\tif _, err := io.ReadFull(conn, header); err != nil {\n\t\treturn nil, err\n\t}\n\tlength := binary.BigEndian.Uint32(header)\n\tresp := make([]byte, length)\n\tif _, err := io.ReadFull(conn, resp); err != nil {\n\t\treturn nil, err\n\t}\n\n\tvar result map[string]any\n\tif err := json.Unmarshal(resp, &result); err != nil {\n\t\treturn nil, err\n\t}\n\n\tvar servers []serverInfo\n\tif serversRaw, ok := result[\"servers\"].(map[string]any); ok {\n\t\tfor _, val := range serversRaw {\n\t\t\tif arr, ok := val.([]any); ok {\n\t\t\t\tfor _, item := range arr {\n\t\t\t\t\tif m, ok := item.(map[string]any); ok {\n\t\t\t\t\t\tsi := serverInfo{}\n\t\t\t\t\t\tif id, ok := m[\"id\"].(string); ok {\n\t\t\t\t\t\t\tsi.ID = id\n\t\t\t\t\t\t}\n\t\t\t\t\t\tif t, ok := m[\"serverType\"].(string); ok {\n\t\t\t\t\t\t\tsi.ServerType = t\n\t\t\t\t\t\t}\n\t\t\t\t\t\tif h, ok := m[\"host\"].(string); ok {\n\t\t\t\t\t\t\tsi.Host = h\n\t\t\t\t\t\t}\n\t\t\t\t\t\tif p, ok := m[\"port\"].(float64); ok {\n\t\t\t\t\t\t\tsi.Port = int(p)\n\t\t\t\t\t\t}\n\t\t\t\t\t\tservers = append(servers, si)\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\n\treturn servers, nil\n}\n\nfunc (a *AdminServer) listServers(w http.ResponseWriter, r *http.Request) {\n\ta.mu.RLock()\n\tdefer a.mu.RUnlock()\n\n\tbyType := make(map[string][]ServerStat)\n\tfor _, s := range a.servers {\n\t\tbyType[s.Type] = append(byType[s.Type], *s)\n\t}\n\n\tw.Header().Set(\"Content-Type\", \"application/json\")\n\tjson.NewEncoder(w).Encode(byType)\n}\n\nfunc (a *AdminServer) getStats(w http.ResponseWriter, r *http.Request) {\n\ta.mu.RLock()\n\tdefer a.mu.RUnlock()\n\n\ttotalServers := len(a.servers)\n\tvar totalClients int\n\tfor _, s := range a.servers {\n\t\ttotalClients += s.Clients\n\t}\n\n\tw.Header().Set(\"Content-Type\", \"application/json\")\n\tjson.NewEncoder(w).Encode(map[string]any{\n\t\t\"servers\": totalServers,\n\t\t\"clients\": totalClients,\n\t})\n}\n\nfunc (a *AdminServer) getConnections(w http.ResponseWriter, r *http.Request) {\n\ta.mu.RLock()\n\tdefer a.mu.RUnlock()\n\n\tvar totalClients int\n\tfor _, s := range a.servers {\n\t\ttotalClients += s.Clients\n\t}\n\n\tw.Header().Set(\"Content-Type\", \"application/json\")\n\tjson.NewEncoder(w).Encode(map[string]any{\"count\": totalClients})\n}\n\nfunc (a *AdminServer) index(w http.ResponseWriter, r *http.Request) {\n\tif r.URL.Path != \"/\" {\n\t\thttp.NotFound(w, r)\n\t\treturn\n\t}\n\thttp.ServeFile(w, r, \"public/index.html\")\n}\n"
+	return "package main\n\nimport (\n\t\"encoding/binary\"\n\t\"encoding/json\"\n\t\"flag\"\n\t\"fmt\"\n\t\"io\"\n\t\"net\"\n\t\"net/http\"\n\t\"sync\"\n\t\"time\"\n)\n\nvar httpAddr = flag.String(\"http\", \":3006\", \"HTTP listen address\")\nvar masterAddr = flag.String(\"master\", \"127.0.0.1:3005\", \"Master server address\")\n\ntype AdminServer struct {\n\tmasterAddr string\n\tservers    map[string]*ServerStat\n\tmu         sync.RWMutex\n\tmux        *http.ServeMux\n\tserver     *http.Server\n}\n\ntype ServerStat struct {\n\tID      string " + qt + "json:\"id\"" + qt + "\n\tType    string " + qt + "json:\"type\"" + qt + "\n\tState   string " + qt + "json:\"state\"" + qt + "\n\tClients int    " + qt + "json:\"clients\"" + qt + "\n\tHost    string " + qt + "json:\"host\"" + qt + "\n\tPort    int    " + qt + "json:\"port\"" + qt + "\n}\n\ntype masterMessage struct {\n\tType string          " + qt + "json:\"type\"" + qt + "\n\tData json.RawMessage " + qt + "json:\"data\"" + qt + "\n}\n\ntype serverInfo struct {\n\tID         string " + qt + "json:\"id\"" + qt + "\n\tServerType string " + qt + "json:\"serverType\"" + qt + "\n\tHost       string " + qt + "json:\"host\"" + qt + "\n\tPort       int    " + qt + "json:\"port\"" + qt + "\n\tFrontend   bool   " + qt + "json:\"frontend\"" + qt + "\n\tState      int    " + qt + "json:\"state\"" + qt + "\n\tCount      int    " + qt + "json:\"count\"" + qt + "\n}\n\nfunc main() {\n\tflag.Parse()\n\n\tadmin := &AdminServer{\n\t\tmasterAddr: *masterAddr,\n\t\tservers:    make(map[string]*ServerStat),\n\t}\n\n\tadmin.mux = http.NewServeMux()\n\tadmin.mux.HandleFunc(\"/api/servers\", admin.listServers)\n\tadmin.mux.HandleFunc(\"/api/stats\", admin.getStats)\n\tadmin.mux.HandleFunc(\"/api/connections\", admin.getConnections)\n\tadmin.mux.HandleFunc(\"/\", admin.index)\n\n\tadmin.server = &http.Server{\n\t\tAddr:    *httpAddr,\n\t\tHandler: admin.mux,\n\t}\n\n\tgo admin.watchMaster()\n\n\tfmt.Printf(\"Admin server starting on %s\\n\", *httpAddr)\n\tadmin.server.ListenAndServe()\n}\n\nfunc (a *AdminServer) watchMaster() {\n\tticker := time.NewTicker(5 * time.Second)\n\tdefer ticker.Stop()\n\n\tfor range ticker.C {\n\t\tservers, err := a.queryMasterServers()\n\t\tif err != nil {\n\t\t\tcontinue\n\t\t}\n\n\t\ta.mu.Lock()\n\t\ta.servers = make(map[string]*ServerStat)\n\t\tfor _, s := range servers {\n\t\t\ta.servers[s.ID] = &ServerStat{\n\t\t\t\tID:      s.ID,\n\t\t\t\tType:    s.ServerType,\n\t\t\t\tState:   \"online\",\n\t\t\t\tClients: s.Count,\n\t\t\t\tHost:    s.Host,\n\t\t\t\tPort:    s.Port,\n\t\t\t}\n\t\t}\n\t\ta.mu.Unlock()\n\t}\n}\n\nfunc (a *AdminServer) queryMasterServers() ([]serverInfo, error) {\n\tconn, err := net.DialTimeout(\"tcp\", a.masterAddr, 5*time.Second)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tdefer conn.Close()\n\n\treq := masterMessage{Type: \"query\"}\n\tdata, _ := json.Marshal(req)\n\tlenBuf := make([]byte, 4)\n\tbinary.BigEndian.PutUint32(lenBuf, uint32(len(data)))\n\tconn.Write(lenBuf)\n\tconn.Write(data)\n\n\theader := make([]byte, 4)\n\tconn.SetReadDeadline(time.Now().Add(10 * time.Second))\n\tif _, err := io.ReadFull(conn, header); err != nil {\n\t\treturn nil, err\n\t}\n\tlength := binary.BigEndian.Uint32(header)\n\tresp := make([]byte, length)\n\tif _, err := io.ReadFull(conn, resp); err != nil {\n\t\treturn nil, err\n\t}\n\n\tvar result map[string]any\n\tif err := json.Unmarshal(resp, &result); err != nil {\n\t\treturn nil, err\n\t}\n\n\tvar servers []serverInfo\n\tif serversRaw, ok := result[\"servers\"].(map[string]any); ok {\n\t\tfor _, val := range serversRaw {\n\t\t\tif arr, ok := val.([]any); ok {\n\t\t\t\tfor _, item := range arr {\n\t\t\t\t\tif m, ok := item.(map[string]any); ok {\n\t\t\t\t\t\tsi := serverInfo{}\n\t\t\t\t\t\tif id, ok := m[\"id\"].(string); ok {\n\t\t\t\t\t\t\tsi.ID = id\n\t\t\t\t\t\t}\n\t\t\t\t\t\tif t, ok := m[\"serverType\"].(string); ok {\n\t\t\t\t\t\t\tsi.ServerType = t\n\t\t\t\t\t\t}\n\t\t\t\t\t\tif h, ok := m[\"host\"].(string); ok {\n\t\t\t\t\t\t\tsi.Host = h\n\t\t\t\t\t\t}\n\t\t\t\t\t\tif p, ok := m[\"port\"].(float64); ok {\n\t\t\t\t\t\t\tsi.Port = int(p)\n\t\t\t\t\t\t}\n\t\t\t\t\t\tservers = append(servers, si)\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\n\treturn servers, nil\n}\n\nfunc (a *AdminServer) listServers(w http.ResponseWriter, r *http.Request) {\n\ta.mu.RLock()\n\tdefer a.mu.RUnlock()\n\n\tbyType := make(map[string][]ServerStat)\n\tfor _, s := range a.servers {\n\t\tbyType[s.Type] = append(byType[s.Type], *s)\n\t}\n\n\tw.Header().Set(\"Content-Type\", \"application/json\")\n\tjson.NewEncoder(w).Encode(byType)\n}\n\nfunc (a *AdminServer) getStats(w http.ResponseWriter, r *http.Request) {\n\ta.mu.RLock()\n\tdefer a.mu.RUnlock()\n\n\ttotalServers := len(a.servers)\n\tvar totalClients int\n\tfor _, s := range a.servers {\n\t\ttotalClients += s.Clients\n\t}\n\n\tw.Header().Set(\"Content-Type\", \"application/json\")\n\tjson.NewEncoder(w).Encode(map[string]any{\n\t\t\"servers\": totalServers,\n\t\t\"clients\": totalClients,\n\t})\n}\n\nfunc (a *AdminServer) getConnections(w http.ResponseWriter, r *http.Request) {\n\ta.mu.RLock()\n\tdefer a.mu.RUnlock()\n\n\tvar totalClients int\n\tfor _, s := range a.servers {\n\t\ttotalClients += s.Clients\n\t}\n\n\tw.Header().Set(\"Content-Type\", \"application/json\")\n\tjson.NewEncoder(w).Encode(map[string]any{\"count\": totalClients})\n}\n\nfunc (a *AdminServer) index(w http.ResponseWriter, r *http.Request) {\n\tif r.URL.Path != \"/\" {\n\t\thttp.NotFound(w, r)\n\t\treturn\n\t}\n\thttp.ServeFile(w, r, \"public/index.html\")\n}\n"
 }
 
 var timeFilterTemplate = `package filter

@@ -127,12 +127,14 @@ func (p *poolClient) GetClient() (RPCClient, error) {
 		return nil, fmt.Errorf("pool closed")
 	}
 
+	// fast path: return an idle connection from the pool
 	if len(p.conns) > 0 {
 		conn := p.conns[len(p.conns)-1]
 		p.conns = p.conns[:len(p.conns)-1]
 		return &clientConn{pool: p, conn: conn, seq: &p.seq}, nil
 	}
 
+	// if at max capacity, wait for a connection to be returned
 	if p.maxConns > 0 && p.totalConns.Load() >= int64(p.maxConns) {
 		waitTimeout := 30 * time.Second
 		deadline := time.Now().Add(waitTimeout)
@@ -145,17 +147,10 @@ func (p *poolClient) GetClient() (RPCClient, error) {
 			if p.closed {
 				return nil, fmt.Errorf("pool closed")
 			}
-			if len(p.conns) > 0 {
-				goto checkout
-			}
-		}
-
-		if p.closed {
-			return nil, fmt.Errorf("pool closed")
 		}
 	}
 
-checkout:
+	// after waiting (or if below max), try to get or create a connection
 	if len(p.conns) == 0 {
 		conn, err := net.DialTimeout("tcp", p.addr, p.opts.Timeout)
 		if err != nil {

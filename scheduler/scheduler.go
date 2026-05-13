@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"container/heap"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -102,7 +103,9 @@ func (p *Scheduler) Push(task *Task) {
 		return
 	}
 	defer func() {
-		recover()
+		if r := recover(); r != nil {
+			log.Printf("scheduler push panic: %v", r)
+		}
 	}()
 	select {
 	case p.tasks <- task:

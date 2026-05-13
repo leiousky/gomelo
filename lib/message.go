@@ -78,13 +78,13 @@ func (m *Message) EncodeBody() ([]byte, error) {
 }
 
 func (m *Message) DecodeBody(v any) error {
-	data, ok := m.Body.([]byte)
-	if !ok {
-		data, err := json.Marshal(m.Body)
-		if err != nil {
-			return err
-		}
-		return json.Unmarshal(data, v)
+	if data, ok := m.Body.([]byte); ok {
+		return defaultCodec.DecodeBody(data, v)
+	}
+	// Fallback: non-byte body — marshal to JSON then unmarshal into target type
+	data, err := json.Marshal(m.Body)
+	if err != nil {
+		return err
 	}
 	return json.Unmarshal(data, v)
 }

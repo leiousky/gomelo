@@ -124,16 +124,17 @@ func (cl *ConnectionLimiter) Acquire() error {
 		return ErrRateLimited
 	}
 
-	current := atomic.LoadInt64(&cl.activeConns)
-	if current >= cl.maxConns {
-		return ErrTooManyConnections
+	// Retry CAS up to 3 times to avoid false rejections under contention
+	for i := 0; i < 3; i++ {
+		current := atomic.LoadInt64(&cl.activeConns)
+		if current >= cl.maxConns {
+			return ErrTooManyConnections
+		}
+		if atomic.CompareAndSwapInt64(&cl.activeConns, current, current+1) {
+			return nil
+		}
 	}
-
-	if !atomic.CompareAndSwapInt64(&cl.activeConns, current, current+1) {
-		return ErrTooManyConnections
-	}
-
-	return nil
+	return ErrTooManyConnections
 }
 
 func (cl *ConnectionLimiter) AcquireWithTimeout(timeout time.Duration) error {

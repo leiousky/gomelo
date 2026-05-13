@@ -2,6 +2,7 @@ package filter
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/chuhongliang/gomelo/lib"
@@ -22,7 +23,9 @@ type Filter interface {
 
 type FilterFunc func(*lib.Context) bool
 
-func (f FilterFunc) Name() string                  { return "func-filter" }
+func (f FilterFunc) Name() string {
+	return fmt.Sprintf("func-filter[%p]", f)
+}
 func (f FilterFunc) Process(ctx *lib.Context) bool { return f(ctx) }
 func (f FilterFunc) After(ctx *lib.Context)        {}
 
